@@ -1,52 +1,59 @@
 package main
 
 import (
-	"ben/benaziz/BackEndApp/Database"
+	"ben/benaziz/BackEndApp/database"
+	"encoding/json"
+	"fmt"
+
+	//"log"
+	"net/http"
 
 	"github.com/gin-gonic/gin"
 )
 
 func main() {
-	// Initialize the database
-	db := Database.GetDatabase()
-	defer db.db.Close() // Close the database connection when main function exits
+	router := gin.Default()
+	router.POST("/", addUser)
+	database.ConnectDatabase()
 
-	// Initialize the database tables
-	db.InitDatabase()
-
-	// Create a new Gin router
-	r := gin.Default()
-
-	// Define a route
-	r.GET("/", func(c *gin.Context) {
-		// Start a database transaction
-		tx := db.StartTransaction()
-		defer db.Rollback(tx) // Rollback the transaction if an error occurs
-		// Perform a database query
-		result, err := db.Read(tx, "SELECT current_date")
-		if err != nil {
-			c.JSON(500, gin.H{"error": "Internal Server Error"})
-			return
-		}
-		defer result.Close() // Close the result set when done with it
-
-		// Iterate over the query results
-		var users []string
-		for i := 0; i < result.Size(); i++ {
-			user := result.Get(i)
-			users = append(users, user.GetString(i, "current_date")) // Assuming current_date is the column name
-		}
-
-		// Commit the transaction
-		if err := db.Commit(tx); err != nil {
-			c.JSON(500, gin.H{"error": "Internal Server Error"})
-			return
-		}
-
-		// Return the query results as JSON
-		c.JSON(200, gin.H{"users": users})
+	router.GET("/", func(context *gin.Context) {
+		context.JSON(http.StatusOK, gin.H{
+			"message": "Welcome",
+		})
 	})
+	err := router.Run(":1010")
+	if err != nil {
+		panic(err)
+	}
 
-	// Run the server on port 1010
-	r.Run(":1010")
+}
+
+type User struct {
+	Name     string
+	Password string
+}
+
+func addUser(ctx *gin.Context) {
+	body := User{}
+	data, err := ctx.GetRawData()
+	if err != nil {
+		ctx.AbortWithStatusJSON(400, "User is not defined")
+		return
+	}
+	err = json.Unmarshal(data, &body)
+	if err != nil {
+		ctx.AbortWithStatusJSON(400, "Bad Input")
+		return
+	}
+	//log.Println("Reach here")
+	_, err = database.DB.Exec("insert into newUser(name,password) values ($1,$2)", body.Name, body.Password)
+	if err != nil {
+		fmt.Println(err)
+		ctx.AbortWithStatusJSON(400, "Could not create a new user")
+
+	} else {
+		ctx.JSON(http.StatusOK, "New user successfully created")
+	}
+	defer database.DB.Close()
+
 }
