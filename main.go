@@ -45,7 +45,6 @@ func addUser(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(400, "Bad Input")
 		return
 	}
-	//log.Println("Reach here")
 	_, err = database.DB.Exec("insert into newUser(name,password) values ($1,$2)", body.Name, body.Password)
 	if err != nil {
 		fmt.Println(err)
