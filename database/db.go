@@ -17,10 +17,15 @@ func ConnectDatabase() {
 	if err != nil {
 		fmt.Println("error has occured in .env file, please check.")
 	}
-	host := os.Getenv("localhost")
-	port, _ := strconv.Atoi(os.Getenv("5432"))
-	user := os.Getenv("benazizsangare")
-	dbname := os.Getenv("gin")
+	host := os.Getenv("HOST")
+	port, _ := strconv.Atoi(os.Getenv("PORT"))
+	user := os.Getenv("USER")
+	dbname := os.Getenv("DB_NAME")
+
+	// fmt.Println("host:", host)
+	// fmt.Println(port)
+	// fmt.Println(user)
+	// fmt.Println(dbname)
 
 	psqlSetup := fmt.Sprintf("host=%s port=%d user=%s dbname=%s sslmode=disable", host, port, user, dbname)
 
@@ -35,3 +40,5 @@ func ConnectDatabase() {
 	}
 
 }
+
+// key = value

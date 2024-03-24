@@ -49,6 +49,7 @@ func addUser(ctx *gin.Context) {
 	_, err = database.DB.Exec("insert into newUser(name,password) values ($1,$2)", body.Name, body.Password)
 	if err != nil {
 		fmt.Println(err)
+		fmt.Println("HELLO HERE")
 		ctx.AbortWithStatusJSON(400, "Could not create a new user")
 
 	} else {
