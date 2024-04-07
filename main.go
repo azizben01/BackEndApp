@@ -5,21 +5,21 @@ import (
 	"encoding/json"
 	"fmt"
 
-	//"log"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	//"github.com/google/uuid"
 )
 
 func main() {
 	router := gin.Default()
 	database.ConnectDatabase()
-	//router.POST("/", CreateUser)
-	//router.POST("/", CreateTransaction)
-	//router.GET("/users/:userid", GetUser)
-	//router.GET("/transactions/:transactionid", GetTransaction)
+	router.POST("/user", CreateUser)
+	router.POST("/transaction", CreateTransaction)
+	router.GET("/users/:userid", GetUser)
+	router.GET("/transactions/:transactionid", GetTransaction)
 	router.DELETE("/transactions/:transactionid", DeleteTransaction)
+	db := &database.Database{DB: database.DB}
+	db.InitDatabase()
 
 	router.GET("/", func(context *gin.Context) {
 		context.JSON(http.StatusOK, gin.H{
@@ -93,7 +93,7 @@ func CreateTransaction(c *gin.Context) {
 		c.AbortWithStatusJSON(400, "Bad Input")
 		return
 	}
-	_, err = database.DB.Exec("INSERT INTO  transactions (amount, currency, sender_number, recipient_number, recipient_name, new_balance, transaction_type, additionaldata) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)", body.Amount, body.Currency, body.Sender_number, body.Recipient_number, body.Recipient_name, body.New_balance, body.Transaction_type, body.Additionaldata)
+	_, err = database.DB.Exec("INSERT INTO  transactions (amount, currency, sender_number, recipient_number, recipient_name, new_balance, transaction_type, additionaldata, userid) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)", body.Amount, body.Currency, body.Sender_number, body.Recipient_number, body.Recipient_name, body.New_balance, body.Transaction_type, body.Additionaldata, body.Userid)
 	if err != nil {
 		fmt.Println(err)
 		c.AbortWithStatusJSON(400, "Failed to create transaction")
@@ -127,7 +127,7 @@ func GetTransaction(c *gin.Context) {
 	transactionid := c.Param("transactionid")
 	var trans Transaction
 	err := database.DB.QueryRow("SELECT * FROM transactions WHERE transactionid = $1", transactionid).
-		Scan(&trans.Amount, &trans.Currency, &trans.Sender_number, &trans.Recipient_number, &trans.Recipient_name, &trans.New_balance, &trans.Transaction_type, &trans.Additionaldata, &trans.Transactionid)
+		Scan(&trans.Amount, &trans.Currency, &trans.Sender_number, &trans.Recipient_number, &trans.Recipient_name, &trans.New_balance, &trans.Transaction_type, &trans.Additionaldata, &trans.Transactionid, &trans.Userid)
 	if err != nil {
 		fmt.Println(err)
 		c.JSON(http.StatusNotFound, gin.H{"error": "Transaction not found"})

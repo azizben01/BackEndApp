@@ -1,14 +1,21 @@
 package database
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
+
+type Database struct {
+	DB  *sql.DB
+	ctx context.Context
+}
 
 var DB *sql.DB
 
@@ -39,7 +46,16 @@ func ConnectDatabase() {
 		DB = db //DB: global varialble declared. db: local variable declared
 		fmt.Println("Successfully connected to the databse")
 	}
+}
 
+func (database *Database) InitDatabase() {
+	tableQueries := GetTableQueries()
+	for _, query := range tableQueries {
+		_, err := database.DB.ExecContext(database.ctx, query)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
 }
 
 // key = value
