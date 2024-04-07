@@ -18,7 +18,7 @@ func main() {
 	router.GET("/users/:userid", GetUser)
 	router.GET("/transactions/:transactionid", GetTransaction)
 	router.DELETE("/transactions/:transactionid", DeleteTransaction)
-	db := &database.Database{DB: database.DB}
+	db := &database.Database{DB: database.DB} // db points to database.Database  which will store database.DB into its variable DB
 	db.InitDatabase()
 
 	router.GET("/", func(context *gin.Context) {

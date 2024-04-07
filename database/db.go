@@ -1,7 +1,6 @@
 package database
 
 import (
-	"context"
 	"database/sql"
 	"fmt"
 	"log"
@@ -13,8 +12,7 @@ import (
 )
 
 type Database struct {
-	DB  *sql.DB
-	ctx context.Context
+	DB *sql.DB
 }
 
 var DB *sql.DB
@@ -51,7 +49,7 @@ func ConnectDatabase() {
 func (database *Database) InitDatabase() {
 	tableQueries := GetTableQueries()
 	for _, query := range tableQueries {
-		_, err := database.DB.ExecContext(database.ctx, query)
+		_, err := database.DB.Exec(query)
 		if err != nil {
 			log.Fatal(err)
 		}
