@@ -8,7 +8,6 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	//"golang.org/x/crypto/bcrypt"
 )
 
 func main() {
@@ -17,9 +16,9 @@ func main() {
 	router.POST("/user", CreateUser)
 	router.POST("/transaction", CreateTransaction)
 	router.GET("/users/:userid", GetUser)
-	router.GET("/transactions/:transactionid", GetTransaction)
+	router.GET("/transactions", GetTransaction)
 	router.DELETE("/transactions/:transactionid", DeleteTransaction)
-	db := &database.Database{DB: database.DB} // db points to database.Database  which will store database.DB into its variable DB
+	db := &database.Database{DB: database.DB} // db points to database.Database  which will store database.DB into its variable DB .... /:transactionid
 	db.InitDatabase()
 
 	router.GET("/", func(context *gin.Context) {
@@ -57,10 +56,10 @@ func CreateUser(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(400, "Bad Input")
 		return
 	}
-	_, err = database.DB.Exec("insert into users(created, name, email, phone_number, password,additionaldata, status) values ($1,$2,$3,$4,$5,$6,$7)", body.Created, body.Name, body.Email, body.Phone_number, body.Password, body.Additionaldata, body.Status)
+	_, err = database.DB.Exec("insert into users(created, name, email, phone_number, password,additionaldata, status,UserID) values ($1,$2,$3,$4,$5,$6,$7,$8)", body.Created, body.Name, body.Email, body.Phone_number, body.Password, body.Additionaldata, body.Status, body.Userid)
 	if err != nil {
 		fmt.Println(err)
-		fmt.Println("HELLO HERE")
+		// fmt.Println("HELLO HERE")
 		ctx.AbortWithStatusJSON(400, "Could not create a new user")
 
 	} else {
@@ -71,16 +70,16 @@ func CreateUser(ctx *gin.Context) {
 }
 
 type Transaction struct {
-	Amount           string          `json:"amount"`
-	Currency         string          `json:"currency"`
-	Sender_phone     string          `json:"sender_number"`
-	Recipient_phone  string          `json:"recipient_number"`
-	Recipient_name   string          `json:"recipient_name"`
-	New_balance      string          `json:"new_balance"`
-	Transaction_type string          `json:"transaction_type"`
-	Additionaldata   json.RawMessage `json:"additionaldata"`
-	Transactionid    int             `json:"transactionid"`
-	Userid           string          `json:"userid"`
+	Amount           int    `json:"amount"`
+	Currency         string `json:"currency"`
+	Sender_phone     string `json:"sender_phone"`
+	Recipient_phone  string `json:"recipient_phone"`
+	Recipient_name   string `json:"recipient_name"`
+	New_balance      string `json:"new_balance"`
+	Transaction_type string `json:"transaction_type"`
+	Additionaldata   string `json:"additionaldata"`
+	Transactionid    int    `json:"transactionid"`
+	Userid           int    `json:"userid"`
 }
 
 func CreateTransaction(c *gin.Context) {
@@ -117,7 +116,7 @@ func GetUser(c *gin.Context) {
 	// Query the database to get user info based on userid
 	var userinfo User
 	err := database.DB.QueryRow("SELECT * FROM users WHERE userid = $1", userid).
-		Scan(&userinfo.Created, &userinfo.Name, &userinfo.Email, &userinfo.Phone_number, &userinfo.Additionaldata, &userinfo.Status, &userinfo.Userid)
+		Scan(&userinfo.Created, &userinfo.Name, &userinfo.Email, &userinfo.Phone_number, &userinfo.Password, &userinfo.Additionaldata, &userinfo.Status, &userinfo.Userid)
 	if err != nil {
 		// If user not found, return 404 Not Found response
 		fmt.Println(err)
@@ -129,18 +128,42 @@ func GetUser(c *gin.Context) {
 	c.JSON(http.StatusOK, userinfo)
 }
 
+// func GetTransaction(c *gin.Context) {
+// 	transactionid := c.Param("transactionid")
+// 	var trans Transaction
+// 	err := database.DB.QueryRow("SELECT * FROM transactions  WHERE transactionid = $1", transactionid).
+// 		Scan(&trans.Amount, &trans.Currency, &trans.Sender_phone, &trans.Recipient_phone, &trans.Recipient_name, &trans.New_balance, &trans.Transaction_type, &trans.Additionaldata, &trans.Transactionid, &trans.Userid)
+// 	if err != nil {
+// 		fmt.Println(err)
+// 		c.JSON(http.StatusNotFound, gin.H{"error": "Transaction not found"})
+// 		return
+
+// 	}
+// 	c.JSON(http.StatusOK, trans)
+// }
+
 func GetTransaction(c *gin.Context) {
-	transactionid := c.Param("transactionid")
-	var trans Transaction
-	err := database.DB.QueryRow("SELECT * FROM transactions WHERE transactionid = $1", transactionid).
-		Scan(&trans.Amount, &trans.Currency, &trans.Sender_phone, &trans.Recipient_phone, &trans.Recipient_name, &trans.New_balance, &trans.Transaction_type, &trans.Additionaldata, &trans.Transactionid, &trans.Userid)
+	var transactions []Transaction
+	rows, err := database.DB.Query("SELECT * FROM transactions")
 	if err != nil {
 		fmt.Println(err)
-		c.JSON(http.StatusNotFound, gin.H{"error": "Transaction not found"})
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve transactions"})
 		return
-
 	}
-	c.JSON(http.StatusOK, trans)
+	defer rows.Close()
+
+	for rows.Next() {
+		var trans Transaction //
+		err := rows.Scan(&trans.Amount, &trans.Currency, &trans.Sender_phone, &trans.Recipient_phone, &trans.Recipient_name, &trans.New_balance, &trans.Transaction_type, &trans.Additionaldata, &trans.Transactionid, &trans.Userid)
+		if err != nil {
+			fmt.Println(err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error processing transaction data"})
+			return
+		}
+		transactions = append(transactions, trans)
+	}
+
+	c.JSON(http.StatusOK, transactions)
 }
 
 func DeleteTransaction(c *gin.Context) {
