@@ -4,9 +4,7 @@ func GetTableQueries() []string {
 	return []string{
 
 		`CREATE TABLE IF NOT EXISTS users (
-			UserID         SERIAL PRIMARY KEY,
-			Created         TEXT,
-			Name            TEXT NOT NULL,
+			Username        TEXT PRIMARY KEY,
 			Email           TEXT NOT NULL,
 			Phone_number    TEXT,
 			Password        TEXT ,
@@ -22,9 +20,9 @@ func GetTableQueries() []string {
 			New_balance      TEXT,
 			Transaction_type TEXT,
 			Additionaldata   TEXT,
+			Created          TEXT,
 			Transactionid    SERIAL PRIMARY KEY,
-			UserID           INT REFERENCES users(userID)
-
+			Username         TEXT REFERENCES users(Username)
 		)`,
 	}
 }

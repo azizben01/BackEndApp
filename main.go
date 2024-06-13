@@ -4,6 +4,7 @@ import (
 	"ben/benaziz/BackEndApp/database"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"net/http"
 
@@ -15,7 +16,7 @@ func main() {
 	database.ConnectDatabase()
 	router.POST("/user", CreateUser)
 	router.POST("/transaction", CreateTransaction)
-	router.GET("/users/:userid", GetUser)
+	router.GET("/users/:username", GetUser)
 	router.GET("/transactions", GetTransaction)
 	router.DELETE("/transactions/:transactionid", DeleteTransaction)
 	db := &database.Database{DB: database.DB} // db points to database.Database  which will store database.DB into its variable DB .... /:transactionid
@@ -34,14 +35,12 @@ func main() {
 }
 
 type User struct {
-	Created        string          `json:"created"`
-	Name           string          `json:"name"`
-	Email          string          `json:"email"`
-	Phone_number   string          `json:"phone_number"`
-	Password       string          `json:"password"`
-	Additionaldata json.RawMessage `json:"additionaldata"`
-	Status         string          `json:"status"`
-	Userid         int             `json:"userid"`
+	Username       string `json:"username"`
+	Email          string `json:"email"`
+	Phone_number   string `json:"phone_number"`
+	Password       string `json:"password"`
+	Additionaldata string `json:"additionaldata"`
+	Status         string `json:"status"`
 }
 
 func CreateUser(ctx *gin.Context) {
@@ -56,7 +55,7 @@ func CreateUser(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(400, "Bad Input")
 		return
 	}
-	_, err = database.DB.Exec("insert into users(created, name, email, phone_number, password,additionaldata, status,UserID) values ($1,$2,$3,$4,$5,$6,$7,$8)", body.Created, body.Name, body.Email, body.Phone_number, body.Password, body.Additionaldata, body.Status, body.Userid)
+	_, err = database.DB.Exec("insert into users(username, email, phone_number, password, additionaldata, status) values ($1,$2,$3,$4,$5,$6)", body.Username, body.Email, body.Phone_number, body.Password, body.Additionaldata, body.Status)
 	if err != nil {
 		fmt.Println(err)
 		// fmt.Println("HELLO HERE")
@@ -78,8 +77,9 @@ type Transaction struct {
 	New_balance      string `json:"new_balance"`
 	Transaction_type string `json:"transaction_type"`
 	Additionaldata   string `json:"additionaldata"`
+	Created          string `json:"created"`
 	Transactionid    int    `json:"transactionid"`
-	Userid           int    `json:"userid"`
+	Username         string `json:"username"`
 }
 
 func CreateTransaction(c *gin.Context) {
@@ -95,28 +95,31 @@ func CreateTransaction(c *gin.Context) {
 
 		return
 	}
+	currentTime := time.Now().Format("2006-01-02 15:04:05")
+	body.Created = currentTime
+
 	fmt.Println("Rname", body.Recipient_name)
 	fmt.Println("Rphone", body.Recipient_phone)
 	fmt.Println("SNumber", body.Sender_phone)
 	println("transType", body.Transaction_type)
-	_, err = database.DB.Exec("INSERT INTO  transactions (amount, currency, sender_phone, recipient_phone, recipient_name, new_balance, transaction_type, additionaldata, userid) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)", body.Amount, body.Currency, body.Sender_phone, body.Recipient_phone, body.Recipient_name, body.New_balance, body.Transaction_type, body.Additionaldata, body.Userid)
+	_, err = database.DB.Exec("INSERT INTO  transactions (amount, currency, sender_phone, recipient_phone, recipient_name, new_balance, transaction_type, additionaldata, created, username) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", body.Amount, body.Currency, body.Sender_phone, body.Recipient_phone, body.Recipient_name, body.New_balance, body.Transaction_type, body.Additionaldata, body.Created, body.Username)
 	if err != nil {
 		fmt.Println(err)
 		c.AbortWithStatusJSON(400, "Failed to create transaction")
 	} else {
 		c.JSON(http.StatusOK, "Transaction successful")
 	}
-
 }
 
 func GetUser(c *gin.Context) {
 	// Extract the userid parameter from the URL
-	userid := c.Param("userid")
+	username := c.Param("username")
 
 	// Query the database to get user info based on userid
 	var userinfo User
-	err := database.DB.QueryRow("SELECT * FROM users WHERE userid = $1", userid).
-		Scan(&userinfo.Created, &userinfo.Name, &userinfo.Email, &userinfo.Phone_number, &userinfo.Password, &userinfo.Additionaldata, &userinfo.Status, &userinfo.Userid)
+	err := database.DB.QueryRow("SELECT * FROM users WHERE username = $1", username).
+		Scan(&userinfo.Username, &userinfo.Email, &userinfo.Phone_number, &userinfo.Password, &userinfo.Additionaldata, &userinfo.Status)
+	fmt.Println("username", userinfo.Username)
 	if err != nil {
 		// If user not found, return 404 Not Found response
 		fmt.Println(err)
@@ -154,7 +157,7 @@ func GetTransaction(c *gin.Context) {
 
 	for rows.Next() {
 		var trans Transaction //
-		err := rows.Scan(&trans.Amount, &trans.Currency, &trans.Sender_phone, &trans.Recipient_phone, &trans.Recipient_name, &trans.New_balance, &trans.Transaction_type, &trans.Additionaldata, &trans.Transactionid, &trans.Userid)
+		err := rows.Scan(&trans.Amount, &trans.Currency, &trans.Sender_phone, &trans.Recipient_phone, &trans.Recipient_name, &trans.New_balance, &trans.Transaction_type, &trans.Additionaldata, &trans.Created, &trans.Transactionid, &trans.Username)
 		if err != nil {
 			fmt.Println(err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Error processing transaction data"})
