@@ -12,6 +12,7 @@ func GetTableQueries() []string {
 			Status          TEXT
 		)`,
 		`CREATE TABLE IF NOT EXISTS transactions (
+		    Username         TEXT REFERENCES users(Username),
 			Amount           INT,
 			Currency         TEXT,
 			Sender_phone     TEXT,
@@ -21,8 +22,7 @@ func GetTableQueries() []string {
 			Transaction_type TEXT,
 			Additionaldata   TEXT,
 			Created          TEXT,
-			Transactionid    SERIAL PRIMARY KEY,
-			Username         TEXT REFERENCES users(Username)
+			Transactionid    SERIAL PRIMARY KEY
 		)`,
 	}
 }

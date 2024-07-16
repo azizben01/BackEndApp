@@ -2,13 +2,15 @@ package main
 
 import (
 	"ben/benaziz/BackEndApp/database"
+	"database/sql"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"time"
 
-	"net/http"
-
 	"github.com/gin-gonic/gin"
+	_ "github.com/lib/pq"
+	"golang.org/x/crypto/bcrypt"
 )
 
 func main() {
@@ -17,6 +19,7 @@ func main() {
 	router.POST("/user", CreateUser)
 	router.POST("/transaction", CreateTransaction)
 	router.GET("/users/:username", GetUser)
+	router.POST("/login", LoginUser)
 	router.GET("/transactions", GetTransaction)
 	router.DELETE("/transactions/:transactionid", DeleteTransaction)
 	db := &database.Database{DB: database.DB} // db points to database.Database  which will store database.DB into its variable DB .... /:transactionid
@@ -24,14 +27,13 @@ func main() {
 
 	router.GET("/", func(context *gin.Context) {
 		context.JSON(http.StatusOK, gin.H{
-			"message": "NOW YOU SEE!!",
+			"message": "Your server is running well !!",
 		})
 	})
 	err := router.Run(":1010")
 	if err != nil {
 		panic(err)
 	}
-
 }
 
 type User struct {
@@ -55,6 +57,14 @@ func CreateUser(ctx *gin.Context) {
 		ctx.AbortWithStatusJSON(400, "Bad Input")
 		return
 	}
+
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(body.Password), bcrypt.DefaultCost)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
+		return
+	}
+	body.Password = string(hashedPassword)
+
 	_, err = database.DB.Exec("insert into users(username, email, phone_number, password, additionaldata, status) values ($1,$2,$3,$4,$5,$6)", body.Username, body.Email, body.Phone_number, body.Password, body.Additionaldata, body.Status)
 	if err != nil {
 		fmt.Println(err)
@@ -64,11 +74,13 @@ func CreateUser(ctx *gin.Context) {
 	} else {
 		ctx.JSON(http.StatusOK, "New user successfully created")
 	}
+
 	//defer database.DB.Close()
 
 }
 
 type Transaction struct {
+	Username         string `json:"username"`
 	Amount           int    `json:"amount"`
 	Currency         string `json:"currency"`
 	Sender_phone     string `json:"sender_phone"`
@@ -79,7 +91,6 @@ type Transaction struct {
 	Additionaldata   string `json:"additionaldata"`
 	Created          string `json:"created"`
 	Transactionid    int    `json:"transactionid"`
-	Username         string `json:"username"`
 }
 
 func CreateTransaction(c *gin.Context) {
@@ -98,11 +109,7 @@ func CreateTransaction(c *gin.Context) {
 	currentTime := time.Now().Format("2006-01-02 15:04:05")
 	body.Created = currentTime
 
-	fmt.Println("Rname", body.Recipient_name)
-	fmt.Println("Rphone", body.Recipient_phone)
-	fmt.Println("SNumber", body.Sender_phone)
-	println("transType", body.Transaction_type)
-	_, err = database.DB.Exec("INSERT INTO  transactions (amount, currency, sender_phone, recipient_phone, recipient_name, new_balance, transaction_type, additionaldata, created, username) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", body.Amount, body.Currency, body.Sender_phone, body.Recipient_phone, body.Recipient_name, body.New_balance, body.Transaction_type, body.Additionaldata, body.Created, body.Username)
+	_, err = database.DB.Exec("INSERT INTO transactions (username, amount, currency, sender_phone, recipient_phone, recipient_name, new_balance, transaction_type, additionaldata, created) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", body.Username, body.Amount, body.Currency, body.Sender_phone, body.Recipient_phone, body.Recipient_name, body.New_balance, body.Transaction_type, body.Additionaldata, body.Created)
 	if err != nil {
 		fmt.Println(err)
 		c.AbortWithStatusJSON(400, "Failed to create transaction")
@@ -129,6 +136,40 @@ func GetUser(c *gin.Context) {
 
 	// Return the user info as JSON
 	c.JSON(http.StatusOK, userinfo)
+}
+
+func LoginUser(c *gin.Context) {
+	var reqUser User
+	if err := c.ShouldBindJSON(&reqUser); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
+		return
+	}
+
+	var storedUser User
+	err := database.DB.QueryRow("SELECT username, email, phone_number, password, additionaldata, status FROM users WHERE email = $1", reqUser.Email).
+		Scan(&storedUser.Username, &storedUser.Email, &storedUser.Phone_number, &storedUser.Password, &storedUser.Additionaldata, &storedUser.Status)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
+		} else {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		}
+		return
+	}
+
+	err = bcrypt.CompareHashAndPassword([]byte(storedUser.Password), []byte(reqUser.Password))
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
+		return
+	}
+
+	// Include user details in the response
+	c.JSON(http.StatusOK, gin.H{
+		"message":      "Login successful",
+		"username":     storedUser.Username,
+		"email":        storedUser.Email,
+		"phone_number": storedUser.Phone_number,
+	})
 }
 
 // func GetTransaction(c *gin.Context) {
