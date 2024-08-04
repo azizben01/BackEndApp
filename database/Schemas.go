@@ -6,23 +6,26 @@ func GetTableQueries() []string {
 		`CREATE TABLE IF NOT EXISTS users (
 			Username        TEXT PRIMARY KEY,
 			Email           TEXT NOT NULL,
-			Phone_number    TEXT,
-			Password        TEXT ,
+			Phonenumber    TEXT NOT NULL,
+			Password        TEXT NOT NULL,
 			Additionaldata  TEXT,
-			Status          TEXT
+			Status          TEXT,
+			Resettoken      TEXT,
+	        Resettokenexpiry time
 		)`,
 		`CREATE TABLE IF NOT EXISTS transactions (
-		    Username         TEXT REFERENCES users(Username),
+		    Transactionid    SERIAL PRIMARY KEY,
+		    Username         TEXT NOT NULL,
 			Amount           INT,
 			Currency         TEXT,
-			Sender_phone     TEXT,
-			Recipient_phone  TEXT,
-			Recipient_name   TEXT,
-			New_balance      TEXT,
-			Transaction_type TEXT,
+			Senderphone     TEXT,
+			Recipientphone  TEXT,
+			Recipientname   TEXT,
+			Newbalance      TEXT,
+			Transactiontype TEXT,
 			Additionaldata   TEXT,
 			Created          TEXT,
-			Transactionid    SERIAL PRIMARY KEY
+			FOREIGN KEY (Username) REFERENCES users (Username)
 		)`,
 	}
 }
