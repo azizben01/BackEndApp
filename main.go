@@ -2,19 +2,25 @@ package main
 
 import (
 	"ben/benaziz/BackEndApp/database"
-	"crypto/rand" // import for generating unique token
+	"context"
+	"crypto/rand"
 	"database/sql"
-	"encoding/hex" // import for generating unique token
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http"
-
-	"net/smtp"
+	"os"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	_ "github.com/lib/pq"
 	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/oauth2"
+	"golang.org/x/oauth2/google"
+	"google.golang.org/api/gmail/v1"
+	"google.golang.org/api/option"
 )
 
 func main() {
@@ -28,7 +34,7 @@ func main() {
 	router.POST("/changePassword", updatePassword)
 	router.GET("/transactions", GetTransaction)
 	router.POST("/deleteAccount", deleteAccount)
-	router.POST("/requestsEmail", RequestPasswordReset)
+	router.POST("/RequestReset", RequestPasswordReset)
 
 	router.DELETE("/transactions/:transactionid", DeleteTransaction)
 	db := &database.Database{DB: database.DB} // db points to database.Database  which will store database.DB into its variable DB .... /:transactionid
@@ -43,6 +49,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+	getTokenJSON()
 }
 
 type User struct {
@@ -369,55 +376,133 @@ func deleteAccount(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "Account deleted successfully"})
 }
 
-// below is the trials for resetting the password
+// from Maxence to generate token then send mail
 
-func generateResetToken() (string, error) { // generates the unique token allowing to reset the password
-	tokenBytes := make([]byte, 32)
-
-	_, err := rand.Read(tokenBytes)
-	fmt.Println("token has been generated:", tokenBytes)
+func getTokenJSON() {
+	ctx := context.Background()
+	b, err := os.ReadFile("credentials.json")
 	if err != nil {
-		return "", err
+		log.Fatalf("Unable to read client secret file: %v", err)
 	}
-	return hex.EncodeToString(tokenBytes), nil
+
+	// If modifying these scopes, delete your previously saved token.json.
+	config, err := google.ConfigFromJSON(b, gmail.GmailSendScope)
+	if err != nil {
+		log.Fatalf("Unable to parse client secret file to config: %v", err)
+	}
+	client := getClient(config)
+
+	srv, err := gmail.NewService(ctx, option.WithHTTPClient(client))
+	if err != nil {
+		log.Fatalf("Unable to retrieve Gmail client: %v", err)
+	}
+
+	user := "me"
+	r, err := srv.Users.Labels.List(user).Do()
+	if err != nil {
+		log.Fatalf("Unable to retrieve labels: %v", err)
+	}
+	if len(r.Labels) == 0 {
+		fmt.Println("No labels found.")
+		return
+	}
+	fmt.Println("Labels:")
+	for _, l := range r.Labels {
+		fmt.Printf("- %s\n", l.Name)
+	}
 }
 
-// func sendResetEmail(toEmail, resetURL string) error { // sends the reset email to the user
-// 	from := "Benazizsang1@gmail.com"
-// 	password := "BAsuccess2001"
+// Retrieve a token, saves the token, then returns the generated client.
+func getClient(config *oauth2.Config) *http.Client {
+	// The file token.json stores the user's access and refresh tokens, and is
+	// created automatically when the authorization flow completes for the first
+	// time.
+	tokFile := "token.json"
+	tok, err := tokenFromFile(tokFile)
+	if err != nil {
+		tok = getTokenFromWeb(config)
+		saveToken(tokFile, tok)
+	}
+	return config.Client(context.Background(), tok)
+}
 
-// 	subject := "Password Reset Request"
-// 	message := fmt.Sprintf("To reset your password, click the following link: %s", resetURL)
+// Request a token from the web, then returns the retrieved token.
+func getTokenFromWeb(config *oauth2.Config) *oauth2.Token {
+	authURL := config.AuthCodeURL("state-token", oauth2.AccessTypeOffline)
+	fmt.Printf("Go to the following link in your browser then type the "+
+		"authorization code: \n%v\n", authURL)
 
-// 	auth := smtp.PlainAuth("", from, password, "smtp.gmail.com") // Configures the authentication details for sending the email.
-// 	msg := []byte("To: " + toEmail + "\r\n" +
-// 		"Subject: " + subject + "\r\n" +
-// 		"\r\n" + // this just adds a new line to separate
-// 		message + "\r\n")
+	var authCode string
+	if _, err := fmt.Scan(&authCode); err != nil {
+		log.Fatalf("Unable to read authorization code: %v", err)
+	}
 
-// 	err := smtp.SendMail("smtp.gmail.com:587", auth, from, []string{toEmail}, msg) // this line is the one sending the email using smtp server.
-// 	if err != nil {
-// 		return err
-// 	}
-// 	// smtp.gmail.com:587 is The SMTP server address and port for Gmail.
-// 	// []string{toEmail} is the recipient's email address.
+	tok, err := config.Exchange(context.TODO(), authCode)
+	if err != nil {
+		log.Fatalf("Unable to retrieve token from web: %v", err)
+	}
+	return tok
+}
 
-// 	return nil
-// }
+// Retrieves a token from a local file.
+func tokenFromFile(file string) (*oauth2.Token, error) {
+	f, err := os.Open(file)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	tok := &oauth2.Token{}
+	err = json.NewDecoder(f).Decode(tok)
+	return tok, err
+}
 
-func sendResetEmail(from string, to []string, subject string, body string) error {
-	// Setup email authentication (change this to your credentials)
-	auth := smtp.PlainAuth("", from, "BAsuccess2001", "smtp.gmail.com")
+// Saves a token to a file path.
+func saveToken(path string, token *oauth2.Token) {
+	fmt.Printf("Saving credential file to: %s\n", path)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		log.Fatalf("Unable to cache oauth token: %v", err)
+	}
+	defer f.Close()
+	json.NewEncoder(f).Encode(token)
+}
+func sendEmail(userEmail string, token string) error {
+	b, err := os.ReadFile("credentials.json")
+	if err != nil {
+		log.Fatalf("Unable to read client secret file: %v", err)
+	}
 
-	// Create the email message
-	msg := []byte("To: " + to[0] + "\r\n" +
-		"Subject: " + subject + "\r\n" +
-		"\r\n" +
-		body + "\r\n")
+	config, err := google.ConfigFromJSON(b, gmail.GmailSendScope)
+	if err != nil {
+		log.Fatalf("Unable to parse client secret file to config: %v", err)
+	}
+	client := getClient(config)
+	ctx := context.Background()
 
-	// Send the email
-	err := smtp.SendMail("smtp.gmail.com:587", auth, from, to, msg)
-	return err
+	srv, err := gmail.NewService(ctx, option.WithHTTPClient(client))
+	if err != nil {
+		log.Fatalf("Unable to retrieve Gmail client: %v", err)
+	}
+
+	var message gmail.Message
+	subject := "Password Reset Request"
+	resetLink := fmt.Sprintf("http://localhost:3000/reset-password?token=%s", token)                                     // Create reset link with token
+	body := fmt.Sprintf("You requested a password reset. Click the link below to reset your password:\n\n%s", resetLink) // Email body with reset link
+
+	msg := []byte("From: 'me'\r\n" +
+		"To: " + userEmail + "\r\n" +
+		"Subject: " + subject + "\r\n\r\n" +
+		body)
+
+	message.Raw = base64.URLEncoding.EncodeToString(msg)
+
+	_, err = srv.Users.Messages.Send("me", &message).Do()
+	if err != nil {
+		return fmt.Errorf("Unable to send email: %v", err)
+	}
+
+	fmt.Println("Email sent successfully!")
+	return nil
 }
 
 func RequestPasswordReset(ctx *gin.Context) {
@@ -437,47 +522,175 @@ func RequestPasswordReset(ctx *gin.Context) {
 		return
 	}
 
+	// Generate the reset token
 	token, err := generateResetToken()
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate reset token"})
 		return
 	}
-	expiry := time.Now().Add(1 * time.Hour)
 
+	// Store the token in the database with an expiry time
+	expiry := time.Now().Add(1 * time.Hour)
 	_, err = database.DB.Exec("UPDATE users SET resettoken = $1, resettokenexpiry = $2 WHERE email = $3", token, expiry, req.Email)
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store reset token"})
-		fmt.Println("no store token", err)
 		return
-	} else {
-		fmt.Println("reset token successfully stored")
 	}
 
-	resetURL := fmt.Sprintf("https://mywebsite.com/reset-passwordTEST?token=%s", token)
-	from := "Benazizsang1@gmail.com"
-	to := []string{user.Email}
-	subject := "Password Reset Request"
-	body := fmt.Sprintf("Hello %s,\n\nPlease use the following link to reset your password:\n%s\n\nIf you did not request a password reset, please ignore this email.", user.Username, resetURL)
-
-	err = sendResetEmail(from, to, subject, body)
+	// Send the password reset email
+	err = sendEmail(user.Email, token)
 	if err != nil {
-		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send reset email"})
-		fmt.Println("email not sent:", err)
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send password reset email"})
 		return
 	}
 
-	ctx.JSON(http.StatusOK, gin.H{"message": "Password reset link has been sent to your email"})
+	ctx.JSON(http.StatusOK, gin.H{"message": "Password reset email sent"})
 }
 
-// 	resetURL := fmt.Sprintf("https://mywebsite.com/thisisthetest?token=%s", token)
-// 	err = sendResetEmail(user.Email, resetURL)
-// 	if err != nil {
-// 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send reset email"})
-// 		fmt.Println("email with token not sent", err)
-// 		return
-// 	} else {
-// 		fmt.Println("email with token successfully sent to", "reseturl", resetURL, "or useremail", user.Email)
+// below is the trials for resetting the password
+
+func generateResetToken() (string, error) { // generates the unique token allowing to reset the password
+	tokenBytes := make([]byte, 32)
+
+	_, err := rand.Read(tokenBytes)
+	fmt.Println("token has been generated:", tokenBytes)
+	if err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(tokenBytes), nil
+}
+
+// func RequestPasswordReset(ctx *gin.Context) {
+// 	var req struct {
+// 		Email string `json:"email"`
 // 	}
 
-// 	ctx.JSON(http.StatusOK, gin.H{"message": "Password reset link has been sent to your email"})
+// 	if err := ctx.ShouldBindJSON(&req); err != nil {
+// 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
+// 		return
+// 	}
+
+// 	var user User
+// 	err := database.DB.QueryRow("SELECT username, email FROM users WHERE email = $1", req.Email).Scan(&user.Username, &user.Email)
+// 	if err != nil {
+// 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Email not found"})
+// 		return
+// 	}
+
+// 	token, err := generateResetToken()
+// 	if err != nil {
+// 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate reset token"})
+// 		return
+// 	}
+// 	expiry := time.Now().Add(1 * time.Hour)
+
+// 	_, err = database.DB.Exec("UPDATE users SET resettoken = $1, resettokenexpiry = $2 WHERE email = $3", token, expiry, req.Email)
+// 	if err != nil {
+// 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store reset token"})
+// 		fmt.Println("no store token", err)
+// 		return
+// 	} else {
+// 		fmt.Println("reset token successfully stored")
+// 	}
+
+// 	err = sendResetEmail(user.Email, token)
+// 	if err != nil {
+// 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send reset email"})
+// 		return
+// 	}
+
+// 	ctx.JSON(http.StatusOK, gin.H{"message": "Password reset email sent successfully"})
+
+// }
+
+// // Below is for sending the email
+
+// func createGmailService() (*gmail.Service, error) {
+// 	ctx := context.Background()
+// 	b, err := os.ReadFile("credentials.json") // your OAuth2 credentials file
+// 	if err != nil {
+// 		return nil, fmt.Errorf("Unable to read client secret file: %v", err)
+// 	}
+
+// 	config, err := google.ConfigFromJSON(b, gmail.GmailSendScope)
+// 	if err != nil {
+// 		return nil, fmt.Errorf("Unable to parse client secret file to config: %v", err)
+// 	}
+
+// 	client := getClient(config) // you should have a function to get the OAuth2 client
+// 	return gmail.NewService(ctx, option.WithHTTPClient(client))
+// }
+
+// func sendResetEmail(email, token string) error {
+// 	service, err := createGmailService()
+// 	if err != nil {
+// 		return fmt.Errorf("Unable to create Gmail service: %v", err)
+// 	}
+
+// 	// Compose the email
+// 	subject := "Password Reset Request"
+// 	resetLink := fmt.Sprintf("http://localhost:3000/=%s", token)
+// 	body := fmt.Sprintf("You requested a password reset. Click the link below to reset your password:\n\n%s", resetLink)
+// 	emailMessage := []byte(fmt.Sprintf("To: %s\r\nSubject: %s\r\n\r\n%s", email, subject, body))
+
+// 	var message gmail.Message
+// 	message.Raw = base64.URLEncoding.EncodeToString(emailMessage)
+
+// 	// Send the email
+// 	_, err = service.Users.Messages.Send("me", &message).Do()
+// 	if err != nil {
+// 		return fmt.Errorf("Unable to send email: %v", err)
+// 	}
+
+// 	return nil
+// }
+
+// func getClient(config *oauth2.Config) *http.Client {
+// 	tokFile := "token.json"
+// 	tok, err := tokenFromFile(tokFile)
+// 	if err != nil {
+// 		tok = getTokenFromWeb(config)
+// 		saveToken(tokFile, tok)
+// 	}
+// 	return config.Client(context.Background(), tok)
+// }
+
+// // tokenFromFile retrieves a token from a local file.
+// func tokenFromFile(file string) (*oauth2.Token, error) {
+// 	f, err := os.Open(file)
+// 	if err != nil {
+// 		return nil, err
+// 	}
+// 	defer f.Close()
+// 	tok := &oauth2.Token{}
+// 	err = json.NewDecoder(f).Decode(tok)
+// 	return tok, err
+// }
+
+// // getTokenFromWeb requests a token from the web and returns the retrieved token.
+// func getTokenFromWeb(config *oauth2.Config) *oauth2.Token {
+// 	authURL := config.AuthCodeURL("state-token", oauth2.AccessTypeOffline)
+// 	fmt.Printf("Go to the following link in your browser then type the authorization code: \n%v\n", authURL)
+
+// 	var authCode string
+// 	if _, err := fmt.Scan(&authCode); err != nil {
+// 		log.Fatalf("Unable to read authorization code: %v", err)
+// 	}
+
+// 	tok, err := config.Exchange(context.TODO(), authCode)
+// 	if err != nil {
+// 		log.Fatalf("Unable to retrieve token from web: %v", err)
+// 	}
+// 	return tok
+// }
+
+// // saveToken saves a token to a file path.
+// func saveToken(path string, token *oauth2.Token) {
+// 	fmt.Printf("Saving credential file to: %s\n", path)
+// 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0600)
+// 	if err != nil {
+// 		log.Fatalf("Unable to cache OAuth token: %v", err)
+// 	}
+// 	defer f.Close()
+// 	json.NewEncoder(f).Encode(token)
 // }
