@@ -25,7 +25,10 @@ func GetTableQueries() []string {
 			Transactiontype TEXT,
 			Additionaldata   TEXT,
 			Created          TEXT,
+			is_deleted       BOOLEAN DEFAULT FALSE,
 			FOREIGN KEY (Username) REFERENCES users (Username)
+			ON DELETE CASCADE
+			ON UPDATE CASCADE
 		)`,
 	}
 }
