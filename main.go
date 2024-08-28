@@ -660,60 +660,6 @@ func ResetPassword(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, gin.H{"message": "Password has been reset successfully"})
 }
 
-// function for updating your reset password in the database
-// func NewPasswordReset(ctx *gin.Context) {
-// 	var req struct {
-// 		NewPassword     string `json:"newPassword"`
-// 		ConfirmPassword string `json:"confirmPassword"`
-// 		Token           string `json:"token"`
-// 	}
-
-// 	if err := ctx.ShouldBindJSON(&req); err != nil {
-// 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
-// 		return
-// 	}
-
-// 	// Validate the passwords
-// 	if req.NewPassword != req.ConfirmPassword {
-// 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Passwords do not match"})
-// 		return
-// 	}
-
-// 	// Verify the token and check expiration
-// 	var username string
-// 	var tokenExpiry time.Time
-// 	err := database.DB.QueryRow("SELECT username, resettokenexpiry FROM users WHERE resettoken = $1", req.Token).Scan(&username, &tokenExpiry)
-// 	if err == sql.ErrNoRows {
-// 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid token"})
-// 		return
-// 	} else if err != nil {
-// 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to validate token"})
-// 		return
-// 	}
-
-// 	// Check if the token has expired
-// 	if time.Now().After(tokenExpiry) {
-// 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Token has expired"})
-// 		return
-// 	}
-
-// 	// Hash the new password
-// 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
-// 	if err != nil {
-// 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
-// 		return
-// 	}
-
-// 	// Update the password in the database
-// 	_, err = database.DB.Exec("UPDATE users SET password = $1, resettoken = NULL, resettokenexpiry = NULL WHERE username = $2", hashedPassword, username)
-// 	if err != nil {
-// 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update password"})
-// 		return
-// 	}
-
-// 	ctx.JSON(http.StatusOK, gin.H{"message": "Password successfully reset"})
-// }
-
 // send an email whenever you register
 func sendWelcomEmail(userEmail string) error {
 	b, err := os.ReadFile("credentials.json")
