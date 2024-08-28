@@ -3,13 +3,16 @@ package main
 import (
 	"ben/benaziz/BackEndApp/database"
 	"context"
-	"crypto/rand"
+
+	// "crypto/rand"
 	"database/sql"
 	"encoding/base64"
-	"encoding/hex"
+
+	// "encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
+	"math/rand" // for generating random 6 digits number
 	"net/http"
 	"os"
 	"time"
@@ -37,7 +40,8 @@ func main() {
 	router.GET("/transactions", GetTransaction)
 	router.POST("/deleteAccount", deleteAccount)
 	router.POST("/RequestReset", RequestPasswordReset)
-	router.POST("/resetWebPassword", NewPasswordReset)
+	router.POST("/ResetCode", VerifyResetCode)   // for verifying code
+	router.POST("/ResetPassword", ResetPassword) // for updating new password in db
 	router.DELETE("/deletetransactions/:transactionid", SoftDeleteTransaction)
 
 	db := &database.Database{DB: database.DB} // db points to database.Database  which will store database.DB into its variable DB .... /:transactionid
@@ -172,6 +176,7 @@ func GetUser(c *gin.Context) {
 	c.JSON(http.StatusOK, userinfo)
 }
 
+// log in function
 func LoginUser(c *gin.Context) {
 	var reqUser User
 	if err := c.ShouldBindJSON(&reqUser); err != nil {
@@ -219,6 +224,7 @@ func LoginUser(c *gin.Context) {
 // 	c.JSON(http.StatusOK, trans)
 // }
 
+// transaction list function
 func GetTransaction(ctx *gin.Context) {
 	var transactions []Transaction
 	rows, err := database.DB.Query("SELECT * FROM transactions WHERE is_deleted = FALSE")
@@ -268,6 +274,7 @@ func SoftDeleteTransaction(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, gin.H{"message": "Transaction deleted successfully"})
 }
 
+// change mobile number function
 func updatePhoneNumber(c *gin.Context) {
 	var req struct {
 		OldPhoneNumber string `json:"oldPhoneNumber"`
@@ -304,6 +311,7 @@ func updatePhoneNumber(c *gin.Context) {
 	})
 }
 
+// change password function
 func updatePassword(c *gin.Context) {
 	var req struct {
 		Username     string `json:"username"`
@@ -363,6 +371,7 @@ func updatePassword(c *gin.Context) {
 	})
 }
 
+// delete account function
 func deleteAccount(c *gin.Context) {
 	var req struct {
 		Username string `json:"username"`
@@ -493,7 +502,7 @@ func saveToken(path string, token *oauth2.Token) {
 	json.NewEncoder(f).Encode(token)
 }
 
-func sendResetEmail(userEmail string, token string) error {
+func sendResetEmail(userEmail string, code string) error {
 	b, err := os.ReadFile("credentials.json")
 	if err != nil {
 		log.Fatalf("Unable to read client secret file: %v", err)
@@ -513,8 +522,7 @@ func sendResetEmail(userEmail string, token string) error {
 
 	var message gmail.Message
 	subject := "Password Reset Request"
-	resetLink := fmt.Sprintf("http://192.168.1.87:3000/ResetPassword?token=%s", token)                                   // Create reset link with token
-	body := fmt.Sprintf("You requested a password reset. Click the link below to reset your password:\n\n%s", resetLink) // Email body with reset link
+	body := fmt.Sprintf("You requested a password reset. Use the code below to reset your password:\n\n%s", code) // Email body with the numeric code
 
 	msg := []byte("From: 'me'\r\n" +
 		"To: " + userEmail + "\r\n" +
@@ -532,6 +540,14 @@ func sendResetEmail(userEmail string, token string) error {
 	return nil
 }
 
+// generate random 6 digits code
+func generateResetCode() (string, error) {
+	// Generate a random 6-digit code
+	code := fmt.Sprintf("%06d", rand.Intn(1000000))
+	return code, nil
+}
+
+// function for requesting the password reset code via email
 func RequestPasswordReset(ctx *gin.Context) {
 	var req struct {
 		Email string `json:"email"`
@@ -549,22 +565,24 @@ func RequestPasswordReset(ctx *gin.Context) {
 		return
 	}
 
-	// Generate the reset token
-	token, err := generateResetToken()
+	// Generate the reset code
+	code, err := generateResetCode()
 	if err != nil {
-		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate reset token"})
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate reset code"})
 		return
 	}
 
 	// Store the token in the database with an expiry time
-	expiry := time.Now().Add(1 * time.Hour)
-	_, err = database.DB.Exec("UPDATE users SET resettoken = $1, resettokenexpiry = $2 WHERE email = $3", token, expiry, req.Email)
+	expiry := time.Now().Add(1 * time.Hour).UTC()
+
+	_, err = database.DB.Exec("UPDATE users SET resettoken = $1, resettokenexpiry = $2 WHERE email = $3", code, expiry, req.Email)
+
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store reset token"})
 		return
 	}
 	// Send the password reset email
-	err = sendResetEmail(user.Email, token)
+	err = sendResetEmail(user.Email, code)
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send password reset email"})
 		return
@@ -573,22 +591,10 @@ func RequestPasswordReset(ctx *gin.Context) {
 	ctx.JSON(http.StatusOK, gin.H{"message": "Password reset email sent"})
 }
 
-func generateResetToken() (string, error) { // generates the unique token allowing to reset the password
-	tokenBytes := make([]byte, 32)
-
-	_, err := rand.Read(tokenBytes)
-	fmt.Println("token has been generated:", tokenBytes)
-	if err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(tokenBytes), nil
-}
-
-func NewPasswordReset(ctx *gin.Context) {
+// function used to verify the reset code then allow the user to change their password
+func VerifyResetCode(ctx *gin.Context) {
 	var req struct {
-		NewPassword     string `json:"newPassword"`
-		ConfirmPassword string `json:"confirmPassword"`
-		Token           string `json:"token"`
+		Code string `json:"code"`
 	}
 
 	if err := ctx.ShouldBindJSON(&req); err != nil {
@@ -596,48 +602,120 @@ func NewPasswordReset(ctx *gin.Context) {
 		return
 	}
 
-	// Validate the passwords
-	if req.NewPassword != req.ConfirmPassword {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Passwords do not match"})
+	var storedCode string
+	var expiry time.Time
+	var email string
+
+	// Find the user by the reset code
+
+	err := database.DB.QueryRow("SELECT email, resettoken, resettokenexpiry FROM users WHERE resettoken = $1", req.Code).Scan(&email, &storedCode, &expiry)
+
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid or expired code"})
 		return
 	}
 
-	// Verify the token and check expiration
-	var username string
-	var tokenExpiry time.Time
-	err := database.DB.QueryRow("SELECT username, resettokenexpiry FROM users WHERE resettoken = $1", req.Token).Scan(&username, &tokenExpiry)
-	if err == sql.ErrNoRows {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid token"})
-		return
-	} else if err != nil {
-		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to validate token"})
+	expiry = expiry.UTC()
+	if time.Now().UTC().After(expiry) {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Code has expired"})
 		return
 	}
 
-	// Check if the token has expired
-	if time.Now().After(tokenExpiry) {
-		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Token has expired"})
+	if req.Code != storedCode {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid code"})
 		return
 	}
 
-	// Hash the new password
-	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+	// If the code is valid, respond with success
+	ctx.JSON(http.StatusOK, gin.H{"message": "Code verified", "email": email})
+}
+
+// function for updating the new password in the database
+func ResetPassword(ctx *gin.Context) {
+	var req struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
+		return
+	}
+
+	// Hash the new password before storing it in the database
+
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
 		return
 	}
 
-	// Update the password in the database
-	_, err = database.DB.Exec("UPDATE users SET password = $1, resettoken = NULL, resettokenexpiry = NULL WHERE username = $2", hashedPassword, username)
+	// Update the user's password and invalidate the reset token
+	_, err = database.DB.Exec("UPDATE users SET password = $1, resettoken = NULL, resettokenexpiry = NULL WHERE email = $2", hashedPassword, req.Email)
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update password"})
 		return
 	}
 
-	ctx.JSON(http.StatusOK, gin.H{"message": "Password successfully reset"})
+	ctx.JSON(http.StatusOK, gin.H{"message": "Password has been reset successfully"})
 }
 
-func sendWelcomEmail(userEmail string) error { // Send an email to any user that registers
+// function for updating your reset password in the database
+// func NewPasswordReset(ctx *gin.Context) {
+// 	var req struct {
+// 		NewPassword     string `json:"newPassword"`
+// 		ConfirmPassword string `json:"confirmPassword"`
+// 		Token           string `json:"token"`
+// 	}
+
+// 	if err := ctx.ShouldBindJSON(&req); err != nil {
+// 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
+// 		return
+// 	}
+
+// 	// Validate the passwords
+// 	if req.NewPassword != req.ConfirmPassword {
+// 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Passwords do not match"})
+// 		return
+// 	}
+
+// 	// Verify the token and check expiration
+// 	var username string
+// 	var tokenExpiry time.Time
+// 	err := database.DB.QueryRow("SELECT username, resettokenexpiry FROM users WHERE resettoken = $1", req.Token).Scan(&username, &tokenExpiry)
+// 	if err == sql.ErrNoRows {
+// 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid token"})
+// 		return
+// 	} else if err != nil {
+// 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to validate token"})
+// 		return
+// 	}
+
+// 	// Check if the token has expired
+// 	if time.Now().After(tokenExpiry) {
+// 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Token has expired"})
+// 		return
+// 	}
+
+// 	// Hash the new password
+// 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.NewPassword), bcrypt.DefaultCost)
+// 	if err != nil {
+// 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
+// 		return
+// 	}
+
+// 	// Update the password in the database
+// 	_, err = database.DB.Exec("UPDATE users SET password = $1, resettoken = NULL, resettokenexpiry = NULL WHERE username = $2", hashedPassword, username)
+// 	if err != nil {
+// 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update password"})
+// 		return
+// 	}
+
+// 	ctx.JSON(http.StatusOK, gin.H{"message": "Password successfully reset"})
+// }
+
+// send an email whenever you register
+func sendWelcomEmail(userEmail string) error {
 	b, err := os.ReadFile("credentials.json")
 	if err != nil {
 		log.Fatalf("Unable to read client secret file: %v", err)
@@ -656,8 +734,8 @@ func sendWelcomEmail(userEmail string) error { // Send an email to any user that
 	}
 
 	var message gmail.Message
-	subject := "New User"                                                                                      // Create reset link with token
-	body := fmt.Sprintf("Swiftpay team is welcoming you into SWIFTPAY. Enjoy your new transaction concept!! ") // Email body with reset link
+	subject := "New Use"
+	body := fmt.Sprintf("Swiftpay team is welcoming you into SWIFTPAY. Enjoy your new transaction concept!! ")
 
 	msg := []byte("From: 'me'\r\n" +
 		"To: " + userEmail + "\r\n" +

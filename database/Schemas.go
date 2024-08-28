@@ -11,7 +11,7 @@ func GetTableQueries() []string {
 			Additionaldata  TEXT,
 			Status          TEXT,
 			Resettoken      TEXT,
-	        Resettokenexpiry time
+	        Resettokenexpiry TIMESTAMP WITH TIME ZONE
 		)`,
 		`CREATE TABLE IF NOT EXISTS transactions (
 		    Transactionid    SERIAL PRIMARY KEY,
