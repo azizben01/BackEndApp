@@ -3,6 +3,7 @@ package main
 import (
 	"ben/benaziz/BackEndApp/database"
 	"context"
+	"strings"
 
 	// "crypto/rand"
 	"database/sql"
@@ -24,6 +25,8 @@ import (
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
+
+	//"golang.org/x/text/number"
 	"google.golang.org/api/gmail/v1"
 	"google.golang.org/api/option"
 )
@@ -32,17 +35,27 @@ func main() {
 	router := gin.Default()
 	database.ConnectDatabase()
 	router.POST("/user", CreateUser)
-	router.POST("/transaction", CreateTransaction)
-	router.GET("/users/:username", GetUser)
+	router.POST("/usertransaction", CreateUserTransaction)
 	router.POST("/login", LoginUser)
 	router.POST("/changeNumber", updatePhoneNumber)
 	router.POST("/changePassword", updatePassword)
-	router.GET("/transactions", GetTransaction)
+	router.GET("/transactions", GetUserTransaction)
 	router.POST("/deleteAccount", deleteAccount)
 	router.POST("/RequestReset", RequestPasswordReset)
 	router.POST("/ResetCode", VerifyResetCode)   // for verifying code
 	router.POST("/ResetPassword", ResetPassword) // for updating new password in db
 	router.DELETE("/deletetransactions/:transactionid", SoftDeleteTransaction)
+	// admnin routes
+	router.POST("/createadmin", CreateAdmin)
+	router.POST("/adminLogin", AdminLogin)
+	router.POST("/admintransaction", CreateAdminTransaction)
+	router.GET("/RetrieveEmployees", GetEmployees)
+	router.GET("/Getadmintransaction", GetAdminTransaction)
+	router.POST("/generateReport", generateReport)
+	router.DELETE("/deleteAdmintransactions/:adminTransactionid", SoftDeleteAdminTransaction)
+	router.DELETE("/deleteemployee/:username", deleteEmployee)
+	router.POST("/requestCode", RequestAdminCode)
+	router.POST("/VerifyAdminCode", VerifyAdminCode)
 
 	db := &database.Database{DB: database.DB} // db points to database.Database  which will store database.DB into its variable DB .... /:transactionid
 	db.InitDatabase()
@@ -59,34 +72,41 @@ func main() {
 	getTokenJSON()
 }
 
-type User struct {
-	Username         string    `json:"username"`
-	Email            string    `json:"email"`
-	Phonenumber      string    `json:"phonenumber"`
-	Password         string    `json:"password"`
-	Additionaldata   string    `json:"additionaldata"`
-	Status           string    `json:"status"`
-	ResetToken       string    `json:"resetToken"`
-	ResetTokenExpiry time.Time `json:"resetTokenExpiry"`
+type Employees struct {
+	Username            string    `json:"username"`
+	Employeefullname    string    `json:"employeefullname"`
+	Email               string    `json:"email"`
+	Phonenumber         string    `json:"phonenumber"`
+	Password            string    `json:"password"`
+	Position            string    `json:"position"`
+	Created				string    `json:"created"`
+	Additionaldata      string    `json:"additionaldata"`
+	Status              string    `json:"status"`
+	ResetToken          *string    `json:"resetToken"`  // Pointer to string to handle NULL
+	ResetTokenExpiry    *time.Time `json:"resetTokenExpiry"`
 }
 
 func CreateUser(ctx *gin.Context) {
-	var req User
+	var req Employees
 
 	if err := ctx.ShouldBindJSON(&req); err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "bad input"})
 	}
-	// body := User{}
-	// data, err := ctx.GetRawData()
-	// if err != nil {
-	// 	ctx.AbortWithStatusJSON(400, "User is not defined")
-	// 	return
-	// }
-	// err = json.Unmarshal(data, &body)
-	// if err != nil {
-	// 	ctx.AbortWithStatusJSON(400, "Bad Input")
-	// 	return
-	// }
+
+	// Normalize the email to lowercase
+	req.Email = strings.ToLower(req.Email)
+
+	// Check if the email already exists
+	var existingEmail string
+	err := database.DB.QueryRow("SELECT email FROM employees WHERE email = $1", req.Email).Scan(&existingEmail)
+	if err != nil && err != sql.ErrNoRows {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		return
+	}
+	if existingEmail != "" {
+		ctx.JSON(http.StatusConflict, gin.H{"error": "Email is already in use"})
+		return
+	}
 
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
@@ -94,26 +114,22 @@ func CreateUser(ctx *gin.Context) {
 		return
 	}
 	req.Password = string(hashedPassword)
+	currentTime := time.Now().Format("2006-01-02 15:04:05")
+	req.Created = currentTime
 
-	_, err = database.DB.Exec("insert into users(username, email, phonenumber, password, additionaldata, status) values ($1,$2,$3,$4,$5,$6)", req.Username, req.Email, req.Phonenumber, req.Password, req.Additionaldata, req.Status)
+	_, err = database.DB.Exec("insert into employees (employeefullname, username, email, phonenumber, password, position, created, additionaldata, status) values ($1,$2,$3,$4,$5,$6,$7,$8,$9)", req.Employeefullname, req.Username, req.Email, req.Phonenumber, req.Password,req.Position, req.Created, req.Additionaldata, req.Status)
 	if err != nil {
 		fmt.Println(err)
-		// fmt.Println("HELLO HERE")
-		ctx.AbortWithStatusJSON(400, "Could not create a new user")
-
-	} else {
-		ctx.JSON(http.StatusOK, "New user successfully created")
-	}
-
-	// send welcom email to user
-
-	err = sendWelcomEmail(req.Email)
-	if err != nil {
-		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send welcom email"})
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Could not create a new user"})
 		return
 	}
 
-	//defer database.DB.Close()
+	// Send welcome email to user
+	err = sendWelcomEmail(req.Email)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send welcome email"})
+		return
+	}
 }
 
 type Transaction struct {
@@ -131,7 +147,7 @@ type Transaction struct {
 	IsDeleted       bool   `json:"is_deleted"`
 }
 
-func CreateTransaction(c *gin.Context) {
+func CreateUserTransaction(c *gin.Context) {
 	body := Transaction{}
 	data, err := c.GetRawData()
 	if err != nil {
@@ -156,47 +172,31 @@ func CreateTransaction(c *gin.Context) {
 
 }
 
-func GetUser(c *gin.Context) {
-	// Extract the userid parameter from the URL
-	username := c.Param("username")
-
-	// Query the database to get user info based on userid
-	var userinfo User
-	err := database.DB.QueryRow("SELECT * FROM users WHERE username = $1", username).
-		Scan(&userinfo.Username, &userinfo.Email, &userinfo.Phonenumber, &userinfo.Password, &userinfo.Additionaldata, &userinfo.Status)
-	fmt.Println("username", userinfo.Username)
-	if err != nil {
-		// If user not found, return 404 Not Found response
-		fmt.Println(err)
-		c.JSON(http.StatusNotFound, gin.H{"error": "User not found"})
-		return
-	}
-
-	// Return the user info as JSON
-	c.JSON(http.StatusOK, userinfo)
-}
-
 // log in function
 func LoginUser(c *gin.Context) {
-	var reqUser User
-	if err := c.ShouldBindJSON(&reqUser); err != nil {
+	var reqEmployee Employees
+	if err := c.ShouldBindJSON(&reqEmployee); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
 		return
 	}
 
-	var storedUser User
-	err := database.DB.QueryRow("SELECT username, email, phonenumber, password, additionaldata, status FROM users WHERE email = $1", reqUser.Email).
-		Scan(&storedUser.Username, &storedUser.Email, &storedUser.Phonenumber, &storedUser.Password, &storedUser.Additionaldata, &storedUser.Status)
+	// Normalize the email to lowercase
+	reqEmployee.Email = strings.ToLower(reqEmployee.Email)
+
+	var storedEmployee Employees
+	err := database.DB.QueryRow("SELECT username, employeefullname, email, phonenumber, password, position, additionaldata, status FROM employees WHERE email = $1", reqEmployee.Email).
+		Scan(&storedEmployee.Username,&storedEmployee.Employeefullname, &storedEmployee.Email, &storedEmployee.Phonenumber, &storedEmployee.Password, &storedEmployee.Position, &storedEmployee.Additionaldata, &storedEmployee.Status)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
 		} else {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+			fmt.Println("databse error", err)
 		}
 		return
 	}
 
-	err = bcrypt.CompareHashAndPassword([]byte(storedUser.Password), []byte(reqUser.Password))
+	err = bcrypt.CompareHashAndPassword([]byte(storedEmployee.Password), []byte(reqEmployee.Password))
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
 		return
@@ -204,9 +204,10 @@ func LoginUser(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"message":      "Login successful",
-		"username":     storedUser.Username,
-		"email":        storedUser.Email,
-		"phone_number": storedUser.Phonenumber,
+		"username":     storedEmployee.Username,
+		"Fullname":     storedEmployee.Employeefullname,
+		"email":        storedEmployee.Email,
+		"phone_number": storedEmployee.Phonenumber,
 	})
 }
 
@@ -225,7 +226,7 @@ func LoginUser(c *gin.Context) {
 // }
 
 // transaction list function
-func GetTransaction(ctx *gin.Context) {
+func GetUserTransaction(ctx *gin.Context) {
 	var transactions []Transaction
 	rows, err := database.DB.Query("SELECT * FROM transactions WHERE is_deleted = FALSE")
 	if err != nil {
@@ -248,6 +249,7 @@ func GetTransaction(ctx *gin.Context) {
 
 	ctx.JSON(http.StatusOK, transactions)
 }
+
 func SoftDeleteTransaction(ctx *gin.Context) {
 	// Get the transaction ID as a string from the URL parameters
 	transactionIDStr := ctx.Param("transactionid")
@@ -286,8 +288,8 @@ func updatePhoneNumber(c *gin.Context) {
 		return
 	}
 
-	var storedUser User
-	err := database.DB.QueryRow("SELECT phonenumber, username, email FROM users WHERE phonenumber = $1", req.OldPhoneNumber).Scan(&storedUser.Phonenumber, &storedUser.Username, &storedUser.Email)
+	var storedUser Employees
+	err := database.DB.QueryRow("SELECT phonenumber, username, email FROM employees WHERE phonenumber = $1", req.OldPhoneNumber).Scan(&storedUser.Phonenumber, &storedUser.Username, &storedUser.Email)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Old phone number does not match our records"})
@@ -326,10 +328,9 @@ func updatePassword(c *gin.Context) {
 		return
 	}
 
-	var storedUser User
-	err := database.DB.QueryRow("SELECT password, username, phonenumber, email FROM users WHERE username = $1", req.Username).Scan(&storedUser.Password, &storedUser.Username, &storedUser.Phonenumber, &storedUser.Email)
+	var storedEmployee Employees
+	err := database.DB.QueryRow("SELECT password, username, phonenumber, email FROM employees WHERE username = $1", req.Username).Scan(&storedEmployee.Password, &storedEmployee.Username, &storedEmployee.Phonenumber, &storedEmployee.Email)
 
-	fmt.Println("current password is 1: ", req.OldPassword)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Current password is incorrect !!"})
@@ -339,10 +340,7 @@ func updatePassword(c *gin.Context) {
 		return
 	}
 
-	fmt.Println("Provided old password:", req.OldPassword)
-	fmt.Println("Stored hashed password:", storedUser.Password)
-
-	err = bcrypt.CompareHashAndPassword([]byte(storedUser.Password), []byte(req.OldPassword))
+	err = bcrypt.CompareHashAndPassword([]byte(storedEmployee.Password), []byte(req.OldPassword))
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Current password is incorrect."})
 		return
@@ -355,7 +353,7 @@ func updatePassword(c *gin.Context) {
 		return
 	}
 
-	_, err = database.DB.Exec("UPDATE users SET password = $1 WHERE username = $2", string(hashedNewPassword), req.Username)
+	_, err = database.DB.Exec("UPDATE employees SET password = $1 WHERE username = $2", string(hashedNewPassword), req.Username)
 
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update password"})
@@ -364,10 +362,10 @@ func updatePassword(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{
 		"message":      "Password updated successfully",
-		"phone_number": storedUser.Phonenumber,
-		"username":     storedUser.Username,
-		"Phone_number": storedUser.Phonenumber,
-		"email":        storedUser.Email,
+		"phone_number": storedEmployee.Phonenumber,
+		"username":     storedEmployee.Username,
+		"Phone_number": storedEmployee.Phonenumber,
+		"email":        storedEmployee.Email,
 	})
 }
 
@@ -383,8 +381,8 @@ func deleteAccount(c *gin.Context) {
 		return
 	}
 
-	var storedUser User
-	err := database.DB.QueryRow("SELECT password FROM users WHERE username = $1", req.Username).Scan(&storedUser.Password)
+	var storedEmployee Employees
+	err := database.DB.QueryRow("SELECT password FROM employees WHERE username = $1", req.Username).Scan(&storedEmployee.Password)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "User not found"})
@@ -395,13 +393,13 @@ func deleteAccount(c *gin.Context) {
 	}
 
 	// Compare the stored hashed password with the provided password
-	err = bcrypt.CompareHashAndPassword([]byte(storedUser.Password), []byte(req.Password))
+	err = bcrypt.CompareHashAndPassword([]byte(storedEmployee.Password), []byte(req.Password))
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "Incorrect password"})
 		return
 	}
 
-	_, err = database.DB.Exec("DELETE FROM users WHERE username = $1", req.Username)
+	_, err = database.DB.Exec("DELETE FROM employees WHERE username = $1", req.Username)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete account"})
 		fmt.Println(err)
@@ -557,9 +555,12 @@ func RequestPasswordReset(ctx *gin.Context) {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
 		return
 	}
+	  // Normalize the email to lowercase
+	  req.Email = strings.ToLower(req.Email)
 
-	var user User
-	err := database.DB.QueryRow("SELECT username, email FROM users WHERE email = $1", req.Email).Scan(&user.Username, &user.Email)
+
+	var employee Employees
+	err := database.DB.QueryRow("SELECT username, email FROM employees WHERE email = $1", req.Email).Scan(&employee.Username, &employee.Email)
 	if err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Email not found"})
 		return
@@ -575,14 +576,14 @@ func RequestPasswordReset(ctx *gin.Context) {
 	// Store the token in the database with an expiry time
 	expiry := time.Now().Add(1 * time.Hour).UTC()
 
-	_, err = database.DB.Exec("UPDATE users SET resettoken = $1, resettokenexpiry = $2 WHERE email = $3", code, expiry, req.Email)
+	_, err = database.DB.Exec("UPDATE employees SET resettoken = $1, resettokenexpiry = $2 WHERE email = $3", code, expiry, req.Email)
 
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store reset token"})
 		return
 	}
 	// Send the password reset email
-	err = sendResetEmail(user.Email, code)
+	err = sendResetEmail(employee.Email, code)
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send password reset email"})
 		return
@@ -608,7 +609,7 @@ func VerifyResetCode(ctx *gin.Context) {
 
 	// Find the user by the reset code
 
-	err := database.DB.QueryRow("SELECT email, resettoken, resettokenexpiry FROM users WHERE resettoken = $1", req.Code).Scan(&email, &storedCode, &expiry)
+	err := database.DB.QueryRow("SELECT email, resettoken, resettokenexpiry FROM employees WHERE resettoken = $1", req.Code).Scan(&email, &storedCode, &expiry)
 
 	if err != nil {
 		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid or expired code"})
@@ -651,7 +652,7 @@ func ResetPassword(ctx *gin.Context) {
 	}
 
 	// Update the user's password and invalidate the reset token
-	_, err = database.DB.Exec("UPDATE users SET password = $1, resettoken = NULL, resettokenexpiry = NULL WHERE email = $2", hashedPassword, req.Email)
+	_, err = database.DB.Exec("UPDATE employees SET password = $1, resettoken = NULL, resettokenexpiry = NULL WHERE email = $2", hashedPassword, req.Email)
 	if err != nil {
 		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update password"})
 		return
@@ -680,8 +681,8 @@ func sendWelcomEmail(userEmail string) error {
 	}
 
 	var message gmail.Message
-	subject := "New Use"
-	body := fmt.Sprintf("Swiftpay team is welcoming you into SWIFTPAY. Enjoy your new transaction concept!! ")
+	subject := "WELCOME TO YOU! "
+	body := fmt.Sprintf("Swiftpay from Aziz is welcoming you into SWIFTPAY. Enjoy your new transaction concept and do not hesitate to contact us for any more information. ")
 
 	msg := []byte("From: 'me'\r\n" +
 		"To: " + userEmail + "\r\n" +
@@ -699,5 +700,456 @@ func sendWelcomEmail(userEmail string) error {
 	return nil
 }
 
-// make so that when you want to reset your password you send a code via email and this same code is used to change the password.
-// this is instead of sending a token
+// Below are the functions related to admin
+type Admin struct {
+	AdminName        string    `json:"adminName"`
+	Email            string    `json:"email"`
+	Fullname	     string    `json:"fullname"`
+	Phonenumber      string   `json:"phonenumber"`
+	Password         string    `json:"password"`
+	Status           string    `json:"status"`
+	ResetToken          *string    `json:"resetToken"`  // Pointer to string to handle NULL
+	ResetTokenExpiry    *time.Time `json:"resetTokenExpiry"`
+	
+}
+// function for registering admin 
+func CreateAdmin(ctx *gin.Context) {
+	var req Admin
+
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "bad input"})
+	}
+
+	// Normalize the email to lowercase
+	req.Email = strings.ToLower(req.Email)
+
+	// Check if the email already exists
+	var existingEmail string
+	err := database.DB.QueryRow("SELECT email FROM admin WHERE email = $1", req.Email).Scan(&existingEmail)
+	if err != nil && err != sql.ErrNoRows {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		return
+	}
+	if existingEmail != "" {
+		ctx.JSON(http.StatusConflict, gin.H{"error": "Email is already in use"})
+		return
+	}
+
+	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
+	if err != nil {
+		ctx.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "Failed to hash password"})
+		return
+	}
+	req.Password = string(hashedPassword)
+
+	_, err = database.DB.Exec("insert into admin (adminName, email, fullname, phonenumber, password, status) values ($1,$2,$3,$4,$5,$6)", req.AdminName, req.Email, req.Fullname, req.Phonenumber, req.Password, req.Status)
+	if err != nil {
+		fmt.Println(err)
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Could not create a new administrator"})
+		return
+	}
+
+	// Send welcome email to user
+	err = sendWelcomEmail(req.Email)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send welcome email"})
+		return
+	}
+	ctx.JSON(http.StatusOK, gin.H{
+		"message":      "new administrator created successful",
+		 })
+}
+
+	 // Function to log in as admin 
+	 func AdminLogin(c *gin.Context) {
+		var reqAdmin Admin
+		if err := c.ShouldBindJSON(&reqAdmin); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
+			return
+		}
+
+		// Normalize the email to lowercase
+	reqAdmin.Email = strings.ToLower(reqAdmin.Email)
+
+		var storedAdmin Admin
+		err := database.DB.QueryRow("SELECT adminname, email, password, fullname, phonenumber, status FROM admin WHERE email = $1", reqAdmin.Email).
+			Scan(&storedAdmin.AdminName, &storedAdmin.Email, &storedAdmin.Password, &storedAdmin.Fullname,&storedAdmin.Phonenumber, &storedAdmin.Status)
+		if err != nil {
+			if err == sql.ErrNoRows {
+				c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email"})
+			} else {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+			}
+			return
+		}
+	
+		err = bcrypt.CompareHashAndPassword([]byte(storedAdmin.Password), []byte(reqAdmin.Password))
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid password"})
+			return
+		}
+	
+		c.JSON(http.StatusOK, gin.H{
+			"message":      "Login successful",
+			"adminname":    storedAdmin.AdminName,
+			"email":        storedAdmin.Email,
+			"phoneNumber":  storedAdmin.Phonenumber,
+			"status":       storedAdmin.Status,
+		})
+	}
+
+// function to display list of employees
+func GetEmployees(ctx *gin.Context) {
+    var employees []Employees
+
+    rows, err := database.DB.Query("SELECT username, employeefullname, email, phonenumber, password, position, created, additionaldata, status, resettoken, resettokenexpiry FROM employees")
+    if err != nil {
+        fmt.Println(err)
+        ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve employees"})
+        return
+    }
+    defer rows.Close()
+
+    for rows.Next() {
+        var emp Employees
+        // Scan nullable fields using pointers (e.g., *string for ResetToken)
+        err := rows.Scan(&emp.Username, &emp.Employeefullname, &emp.Email, &emp.Phonenumber, &emp.Password, &emp.Position, &emp.Created, &emp.Additionaldata, &emp.Status, &emp.ResetToken, &emp.ResetTokenExpiry)
+        if err != nil {
+            fmt.Println(err)
+            ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Error processing employee data"})
+            return
+        }
+        employees = append(employees, emp)
+    }
+
+    ctx.JSON(http.StatusOK, employees)
+}
+
+type adminTransaction struct {
+	AdminTransactionid 	int `json:"adminTransactionid"`
+	Adminname 			string`json:"adminname"`
+	Amount 				int `json:"amount"`
+	Currency			string`json:"currency"`
+	Adminphone 			string`json:"adminphone"`
+	Username 			string`json:"username"`
+	Employeephone 		string`json:"employeephone"`
+	Newbalance 			string`json:"newbalance"`
+	Transactiontype 	string`json:"transactiontype"`
+	Additionaldata 		string`json:"additionaldata"`
+	Created 			string`json:"created"`
+	Is_deleted 			bool `json:"is_deleted"`
+}
+// function to let admin make transactions 
+func CreateAdminTransaction(c *gin.Context) {
+	var reqtransaction adminTransaction
+	if err := c.ShouldBindBodyWithJSON(&reqtransaction); err != nil {
+		c.AbortWithStatusJSON(400, gin.H{"error": "Bad admin Input"})
+
+		return
+	}
+	currentTime := time.Now().Format("2006-01-02 15:04:05")
+	reqtransaction.Created = currentTime
+
+	fmt.Println("adminname income:", reqtransaction.Adminname)
+	fmt.Println("employeename income:", reqtransaction.Username)
+	_, err := database.DB.Exec("INSERT INTO admintransactions (adminname, amount, currency, adminphone, username, employeephone, newbalance, transactiontype, additionaldata, created) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)", reqtransaction.Adminname, reqtransaction.Amount, reqtransaction.Currency, reqtransaction.Adminphone, reqtransaction.Username, reqtransaction.Employeephone, reqtransaction.Newbalance, reqtransaction.Transactiontype, reqtransaction.Additionaldata, reqtransaction.Created)
+	if err != nil {
+		fmt.Println(err)
+		c.AbortWithStatusJSON(400, "Failed to create admin transaction")
+		return
+	}
+}
+
+func GetAdminTransaction(ctx *gin.Context) {
+	var transactions []adminTransaction
+	rows, err := database.DB.Query("SELECT * FROM admintransactions WHERE is_deleted = FALSE")
+	if err != nil {
+		fmt.Println(err)
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to retrieve admin transactions"})
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var trans adminTransaction
+		err := rows.Scan(&trans.AdminTransactionid,&trans.Adminname, &trans.Amount, &trans.Currency, &trans.Adminphone,&trans.Username, &trans.Employeephone, &trans.Newbalance, &trans.Transactiontype, &trans.Additionaldata, &trans.Created, &trans.Is_deleted)
+		if err != nil {
+			fmt.Println(err)
+			ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Error processing admin transaction data"})
+			return
+		}
+		transactions = append(transactions, trans)
+	}
+
+	ctx.JSON(http.StatusOK, transactions)
+}
+
+
+// type Report struct {
+// 	Report_id  			 	 int    `json:"report_id"`
+// 	Title    			 	 string  `json:"title"`
+// 	Description 		 	 string    `json:"decription"`
+// 	Createdby  			 	 string  `json:"createdby"`
+// 	Period  			 	 string  `json:"period"`
+// 	Numberofemployees 	 	 int    `json:"numberofemployees"`
+// 	Numberoftransactions 	 int   `json:"numberoftransactions"`
+// 	Highesttransaction   	 int   `json:"highesttransaction"`
+// 	Lowesttransaction    	 int   `json:"lowesttransaction"`
+// 	Averagetransactions  	 int    `json:"averagetransactions"`
+// 	Totalamounttransferred   int    `json:"totalamounttransferred"`
+// 	Created_at  		 	 string    `json:"created_at"`
+// 	Additionaldata       	 string  `json:"additionaldata"`
+// }
+
+
+func SoftDeleteAdminTransaction(ctx *gin.Context) {
+	// Get the transaction ID as a string from the URL parameters
+	admintransactionIDStr := ctx.Param("adminTransactionid")
+
+	// Convert the string transaction ID to an integer
+	admintransactionID, err := strconv.Atoi(admintransactionIDStr)
+	if err != nil {
+		fmt.Println("Invalid transaction ID:", err)
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid admin transaction ID"})
+		return
+	}
+	// Prepare the SQL query
+	query := "UPDATE admintransactions SET is_deleted = TRUE WHERE admintransactionid = $1"
+
+	// Execute the query with the transaction ID
+	_, err = database.DB.Exec(query, admintransactionID)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete admin transactions"})
+		fmt.Println("failed to delete admin transaction:", err)
+		return
+	}
+
+	// respond with success
+	ctx.JSON(http.StatusOK, gin.H{"message": " admin Transaction deleted successfully"})
+}
+
+
+
+
+
+func deleteEmployee(c *gin.Context) {
+	// Retrieve the username from the URL parameter or request body
+	username := c.Param("username") // Assuming you're passing the username as a URL parameter
+
+	// Check if the employee exists in the database
+	var storedEmployee Employees
+	err := database.DB.QueryRow("SELECT username FROM employees WHERE username = $1", username).Scan(&storedEmployee.Username)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			// If no employee is found, return an error
+			c.JSON(http.StatusNotFound, gin.H{"error": "Employee not found"})
+		} else {
+			// Database error
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		}
+		return
+	}
+
+	// Proceed to delete the employee from the database
+	_, err = database.DB.Exec("DELETE FROM employees WHERE username = $1", username)
+	if err != nil {
+		// Handle any database-related error during deletion
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to remove employee"})
+		fmt.Println(err)
+		return
+	}
+
+	// Respond with a success message once the employee is deleted
+	c.JSON(http.StatusOK, gin.H{"message": "Employee removed successfully"})
+}
+
+func RequestAdminCode(ctx *gin.Context) {
+	var req struct {
+		Email string `json:"email"`
+	}
+
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
+		return
+	}
+  fmt.Println("admin email requested:", req.Email)
+  // Normalize the email to lowercase
+	req.Email = strings.ToLower(req.Email)
+
+	var admin Admin
+	err := database.DB.QueryRow("SELECT adminname, email FROM admin WHERE email = $1", req.Email).Scan(&admin.AdminName, &admin.Email)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "admin Email not found"})
+		return
+	}
+
+	// Generate the reset code
+	code, err := generateResetCode()
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate reset code"})
+		return
+	}
+
+	// Store the token in the database with an expiry time
+	expiry := time.Now().Add(1 * time.Hour).UTC()
+
+	_, err = database.DB.Exec("UPDATE admin SET resettoken = $1, resettokenexpiry = $2 WHERE email = $3", code, expiry, req.Email)
+
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to store admin reset token"})
+		return
+	}
+	// Send the password reset email
+	err = sendResetEmail(admin.Email, code)
+	if err != nil {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send admin password reset email"})
+		return
+	}
+
+	ctx.JSON(http.StatusOK, gin.H{"message": "admin Password reset email sent"})
+}
+
+func VerifyAdminCode(ctx *gin.Context) {
+	var req struct {
+		Code string `json:"code"`
+	}
+
+	if err := ctx.ShouldBindJSON(&req); err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
+		return
+	}
+
+	var storedCode string
+	var expiry time.Time
+	var email string
+
+	// Find the user by the reset code
+
+	err := database.DB.QueryRow("SELECT email, resettoken, resettokenexpiry FROM admin WHERE resettoken = $1", req.Code).Scan(&email, &storedCode, &expiry)
+      fmt.Println(&email)
+      fmt.Println(&storedCode)
+	if err != nil {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid or expired admin code"})
+		fmt.Println("invalid code:", err)
+		return
+	}
+
+	expiry = expiry.UTC()
+	if time.Now().UTC().After(expiry) {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "admin Code has expired"})
+		return
+	}
+
+	if req.Code != storedCode {
+		ctx.JSON(http.StatusBadRequest, gin.H{"error": "Invalid code"})
+		return
+	}
+
+	// If the code is valid, respond with success
+	ctx.JSON(http.StatusOK, gin.H{"message": "Code verified", "email": email})
+}
+
+type ReportRequest struct {
+    Title         string `json:"title"`
+    Description   string `json:"description"`
+	Createdby	  string `json:"createdby"`
+    Period        string `json:"period"`
+	
+}
+
+type Report struct {
+	Title              		  string `json:"title"`
+	Description        		  string `json:"description"`
+	Createdby		  		  string `json:"ceatedby"`
+	Period             		  string `json:"period"`
+	Numberofemployees  		  int `json:"numberofemployees"`
+	TotalTransactions  		  int    `json:"total_transactions"`
+	HighestTransaction 		  int    `json:"highest_transaction"`
+	LowestTransaction  		  int    `json:"lowest_transaction"`
+	Totalamounttransferred    int    `json:"totalamounttransferred"`
+	CreatedAt          		  string `json:"created_at"`
+}
+
+// Determine the date range based on the period
+	// var dateCondition string
+	// switch req.Period {
+	// case "monthly":
+	// 	dateCondition = "NOW() - INTERVAL '30 days'"
+	// case "trimonthly":
+	// 	dateCondition = "NOW() - INTERVAL '90 days'"
+	// case "yearly":
+	// 	dateCondition = "NOW() - INTERVAL '365 days'"
+	// default:
+	// 	c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid period"})
+	// 	return
+	// }
+
+	// add average for the transactions
+	
+
+func generateReport(c *gin.Context) {
+	var req ReportRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid input"})
+		return
+	}
+
+	
+fmt.Println(req.Createdby)
+fmt.Println(req.Title)
+	var report Report
+	report.Title = req.Title
+	report.Description = req.Description
+	report.Period = req.Period
+	report.Createdby = req.Createdby
+	// Calculate report values
+	err := database.DB.QueryRow("SELECT COUNT(*) FROM employees").Scan(&report.Numberofemployees)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to calculate total employees"})
+		
+		return
+	}
+	err = database.DB.QueryRow("SELECT COUNT(*) FROM admintransactions ").Scan(&report.TotalTransactions) //WHERE created > NOW() - INTERVAL $1", dateCondition
+	fmt.Println("Total transactions:", report.TotalTransactions)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to calculate total transactions"})
+		return
+	}
+	
+
+	err = database.DB.QueryRow("SELECT COALESCE(MAX(amount), 0) FROM admintransactions ").Scan(&report.HighestTransaction) // WHERE created > " + dateCondition
+	fmt.Println("highest transaction:", report.HighestTransaction)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to calculate highest transaction"})
+		return
+	}
+
+	err = database.DB.QueryRow("SELECT COALESCE(MIN(amount), 0) FROM admintransactions").Scan(&report.LowestTransaction) // WHERE created > " + dateCondition
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to calculate lowest transaction"})
+		return
+	}
+
+	err = database.DB.QueryRow("SELECT COALESCE(SUM(amount), 0) FROM admintransactions ").Scan(&report.Totalamounttransferred) // WHERE created > " + dateCondition
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to calculate total outcome"})
+		return
+	}
+
+	// Insert report into the database
+	_, err = database.DB.Exec(`INSERT INTO reports (title, description, createdby, period, numberofemployees, numberoftransactions, highesttransaction, lowesttransaction, totalamounttransferred) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+		req.Title, req.Description, req.Createdby, req.Period, report.Numberofemployees, report.TotalTransactions,
+		report.HighestTransaction, report.LowestTransaction, report.Totalamounttransferred)
+	if err != nil {
+		fmt.Println("Report not saved:", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to save report"})
+		return
+	}
+
+	// Set the created at field
+	report.CreatedAt = time.Now().Format(time.RFC3339)
+
+	// Return the generated report
+	 c.JSON(http.StatusOK, report)
+
+}
