@@ -73,7 +73,7 @@ func GetTableQueries() []string {
 			description            TEXT,
     		createdby              TEXT NOT NULL,
     		period                 TEXT NOT NULL,
-    		numberofemployees    INT,
+    		numberofemployees      INT,
     		numberoftransactions   INT,
     		highesttransaction     INT,
     		lowesttransaction      INT,
