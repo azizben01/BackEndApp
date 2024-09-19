@@ -14,7 +14,9 @@ func GetTableQueries() []string {
 			additionaldata     TEXT,
 			status             TEXT,
 			resettoken         TEXT,
-	        resettokenexpiry   TIMESTAMP WITH TIME ZONE
+	        resettokenexpiry   TIMESTAMP WITH TIME ZONE,
+			failed_attempts  INT DEFAULT 0,
+    		lockout_until    TIMESTAMP WITH TIME ZONE  
 		)`,
 
 		`CREATE TABLE IF NOT EXISTS transactions (
@@ -43,7 +45,9 @@ func GetTableQueries() []string {
 			email	   		 TEXT NOT NULL,
 			status     		 TEXT,
 			resettoken         TEXT,
-	        resettokenexpiry   TIMESTAMP WITH TIME ZONE
+	        resettokenexpiry   TIMESTAMP WITH TIME ZONE,
+			failed_attempts  INT DEFAULT 0,  -- Track failed login attempts
+            lockout_until    TIMESTAMP WITH TIME ZONE  -- Track lockout expiration time
 		)`,
 
 		`CREATE TABLE IF NOT EXISTS admintransactions (

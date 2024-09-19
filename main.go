@@ -105,6 +105,9 @@ type Employees struct {
 	Status           string     `json:"status"`
 	ResetToken       *string    `json:"resetToken"` // Pointer to string to handle NULL
 	ResetTokenExpiry *time.Time `json:"resetTokenExpiry"`
+	// New fields for login attempt tracking and lockout
+	FailedAttempts   int        `json:"failedAttempts"`   // Track failed login attempts
+	LockoutUntil     *time.Time `json:"lockoutUntil"`     // Handle lockout expiration, use pointer for nullable
 }
 
 // Function to validate phone number
@@ -157,6 +160,18 @@ if !isValidPhoneNumber(req.Phonenumber) {
 	}
 	if existingEmail != "" {
 		ctx.JSON(http.StatusConflict, gin.H{"error": "Email is already in use"})
+		return
+	}
+
+	// Check if the phone number already exists
+	var existingPhoneNumber string
+	err = database.DB.QueryRow("SELECT phonenumber FROM employees WHERE phonenumber = $1", req.Phonenumber).Scan(&existingPhoneNumber)
+	if err != nil && err != sql.ErrNoRows {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		return
+	}
+	if existingPhoneNumber != "" {
+		ctx.JSON(http.StatusConflict, gin.H{"error": "Phone number already in used. Please provide your own phone number"})
 		return
 	}
 
@@ -232,8 +247,6 @@ func CreateUserTransaction(c *gin.Context) {
 	}
 
 }
-
-// log in function
 func LoginUser(c *gin.Context) {
 	var reqEmployee Employees
 	if err := c.ShouldBindJSON(&reqEmployee); err != nil {
@@ -245,24 +258,96 @@ func LoginUser(c *gin.Context) {
 	reqEmployee.Email = strings.ToLower(reqEmployee.Email)
 
 	var storedEmployee Employees
-	err := database.DB.QueryRow("SELECT username, employeefullname, email, phonenumber, password, position, additionaldata, status FROM employees WHERE email = $1", reqEmployee.Email).
-		Scan(&storedEmployee.Username, &storedEmployee.Employeefullname, &storedEmployee.Email, &storedEmployee.Phonenumber, &storedEmployee.Password, &storedEmployee.Position, &storedEmployee.Additionaldata, &storedEmployee.Status)
+	err := database.DB.QueryRow(
+		"SELECT username, employeefullname, email, phonenumber, password, position, additionaldata, status, failed_attempts, lockout_until FROM employees WHERE email = $1", 
+		reqEmployee.Email).
+		Scan(
+			&storedEmployee.Username, &storedEmployee.Employeefullname, &storedEmployee.Email, &storedEmployee.Phonenumber, 
+			&storedEmployee.Password, &storedEmployee.Position, &storedEmployee.Additionaldata, &storedEmployee.Status, 
+			&storedEmployee.FailedAttempts, &storedEmployee.LockoutUntil,
+		)
+
 	if err != nil {
 		if err == sql.ErrNoRows {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email"})
 		} else {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
-			fmt.Println("databse error", err)
+			fmt.Println("database error", err)
 		}
 		return
 	}
 
-	err = bcrypt.CompareHashAndPassword([]byte(storedEmployee.Password), []byte(reqEmployee.Password))
-	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email or password"})
+	// Log the current values of failed_attempts and lockout_until
+	fmt.Printf("Before update: failed_attempts=%d, lockout_until=%v\n", storedEmployee.FailedAttempts, storedEmployee.LockoutUntil)
+
+	// Check if the user is locked out
+	if storedEmployee.LockoutUntil != nil && storedEmployee.LockoutUntil.After(time.Now()) {
+		// User is locked out, return an error
+		fmt.Println("User is still locked out.")
+		c.JSON(http.StatusForbidden, gin.H{"error": "Account is temporarily locked due to multiple failed login attempts. Please try again later."})
 		return
 	}
+	fmt.Println("Reach here 1: user locked out check passed")
 
+	// Compare passwords
+	err = bcrypt.CompareHashAndPassword([]byte(storedEmployee.Password), []byte(reqEmployee.Password))
+	if err != nil {
+		// Password mismatch, increment failed_attempts
+		storedEmployee.FailedAttempts++
+		if storedEmployee.FailedAttempts >= 5 {
+			// Lock the account for 2 minutes (for testing purposes)
+			lockoutUntil := time.Now().Add(10 * time.Minute)
+			_, err := database.DB.Exec(
+				"UPDATE employees SET failed_attempts = $1, lockout_until = $2 WHERE email = $3",
+				storedEmployee.FailedAttempts, lockoutUntil, reqEmployee.Email,
+			)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+				return
+			}
+			fmt.Printf("User locked out until: %v\n", lockoutUntil)
+			fmt.Println("Reach here 2: Yes, user is locked out")
+
+			// Send account locked email
+			err = sendAccountLocked(storedEmployee.Email)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Unable to send account lockout email"})
+				return
+			}
+
+			c.JSON(http.StatusForbidden, gin.H{"error": "Too many failed attempts. Account locked for 10 minutes."})
+		} else {
+			// Update the failed attempts count
+			_, err := database.DB.Exec(
+				"UPDATE employees SET failed_attempts = $1 WHERE email = $2",
+				storedEmployee.FailedAttempts, reqEmployee.Email,
+			)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+				return
+			}
+			fmt.Printf("Failed attempts updated to: %d\n", storedEmployee.FailedAttempts)
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid password"})
+		}
+		return
+	}
+	fmt.Println("Reach here 3: Password correct")
+
+	// Successful login, reset failed attempts and lockout_until before sending the response
+	_, err = database.DB.Exec(
+		"UPDATE employees SET failed_attempts = 0, lockout_until = NULL WHERE email = $1",
+		reqEmployee.Email,
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		return
+	}
+	fmt.Println("Reach here 4: Reset failed attempts and lockout_until")
+
+	// Log the updated values of failed_attempts and lockout_until
+	fmt.Printf("After update: failed_attempts=%d, lockout_until=%v\n", storedEmployee.FailedAttempts, storedEmployee.LockoutUntil)
+
+	// Send successful login response
 	c.JSON(http.StatusOK, gin.H{
 		"message":      "Login successful",
 		"username":     storedEmployee.Username,
@@ -1043,7 +1128,8 @@ func sendWelcomEmail(userEmail string) error {
 
 	var message gmail.Message
 	subject := "WELCOME TO YOU! "
-	body := fmt.Sprintf("Swiftpay from Aziz is welcoming you into SWIFTPAY. Enjoy your new transaction concept and do not hesitate to contact us for any more information. ")
+	//body := fmt.Sprintf("Swiftpay from Aziz is welcoming you into SWIFTPAY. Enjoy your new transaction concept and do not hesitate to contact us for any more information. ")
+	body := fmt.Sprintf("Welcome to SWIFTPAY family! We're excited to have you join our community of shoppers. We look forward to serving you and providing you with an exceptional shopping experience.")
 
 	msg := []byte("From: 'me'\r\n" +
 		"To: " + userEmail + "\r\n" +
@@ -1061,6 +1147,53 @@ func sendWelcomEmail(userEmail string) error {
 	return nil
 }
 
+func sendAccountLocked(userEmail string) error {
+	// Load credentials for Gmail API
+	b, err := os.ReadFile("credentials.json")
+	if err != nil {
+		log.Fatalf("Unable to read client secret file: %v", err)
+	}
+
+	// Set up Google OAuth2 configuration
+	config, err := google.ConfigFromJSON(b, gmail.GmailSendScope)
+	if err != nil {
+		log.Fatalf("Unable to parse client secret file to config: %v", err)
+	}
+	client := getClient(config)
+	ctx := context.Background()
+
+	// Create Gmail service
+	srv, err := gmail.NewService(ctx, option.WithHTTPClient(client))
+	if err != nil {
+		log.Fatalf("Unable to retrieve Gmail client: %v", err)
+	}
+
+	// Prepare email message content
+	subject := "Account Locked - Too Many Failed Login Attempts"
+	body := fmt.Sprintf("Dear user,\n\nYour account has been temporarily locked due to multiple failed login attempts. " +
+		"For security purposes, your account will remain locked for a set duration. Please try again later.\n\n" +
+		"If you need immediate assistance or did not attempt to log in, please contact our support team by replying to this email.\n\n" +
+		"Thank you,\nThe SWIFTPAY Team")
+
+	msg := []byte("From: 'me'\r\n" +
+		"To: " + userEmail + "\r\n" +
+		"Subject: " + subject + "\r\n\r\n" +
+		body)
+
+	// Encode the message to be sent
+	var message gmail.Message
+	message.Raw = base64.URLEncoding.EncodeToString(msg)
+
+	// Send the email
+	_, err = srv.Users.Messages.Send("me", &message).Do()
+	if err != nil {
+		return fmt.Errorf("Unable to send email: %v", err)
+	}
+
+	fmt.Println("Account lockout email sent successfully!")
+	return nil
+}
+
 // Below are the functions related to admin
 type Admin struct {
 	AdminName        string     `json:"adminname"`
@@ -1071,6 +1204,8 @@ type Admin struct {
 	Status           string     `json:"status"`
 	ResetToken       *string    `json:"resetToken"` // Pointer to string to handle NULL
 	ResetTokenExpiry *time.Time `json:"resetTokenExpiry"`
+	FailedAttempts   int        `json:"failedAttempts"`   // Track failed login attempts
+	LockoutUntil     *time.Time `json:"lockoutUntil"`
 }
 
 // function for registering admin
@@ -1106,6 +1241,19 @@ if !isValidPhoneNumber(req.Phonenumber) {
 		ctx.JSON(http.StatusConflict, gin.H{"error": "Email is already in use"})
 		return
 	}
+
+	// Check if the phone number already exists
+	var existingPhoneNumber string
+	err = database.DB.QueryRow("SELECT phonenumber FROM admin WHERE phonenumber = $1", req.Phonenumber).Scan(&existingPhoneNumber)
+	if err != nil && err != sql.ErrNoRows {
+		ctx.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+		return
+	}
+	if existingPhoneNumber != "" {
+		ctx.JSON(http.StatusConflict, gin.H{"error": "Phone number already in used. Please provide your own phone number"})
+		return
+	}
+
 
 	// Check if the adminname already exists
 	var existingAdminname string
@@ -1156,8 +1304,14 @@ func AdminLogin(c *gin.Context) {
 	reqAdmin.Email = strings.ToLower(reqAdmin.Email)
 
 	var storedAdmin Admin
-	err := database.DB.QueryRow("SELECT adminname, email, password, fullname, phonenumber, status FROM admin WHERE email = $1", reqAdmin.Email).
-		Scan(&storedAdmin.AdminName, &storedAdmin.Email, &storedAdmin.Password, &storedAdmin.Fullname, &storedAdmin.Phonenumber, &storedAdmin.Status)
+	err := database.DB.QueryRow(
+		"SELECT adminname, email, password, fullname, phonenumber, status, failed_attempts, lockout_until FROM admin WHERE email = $1", 
+		reqAdmin.Email).
+		Scan(
+			&storedAdmin.AdminName, &storedAdmin.Email, &storedAdmin.Password, &storedAdmin.Fullname, 
+			&storedAdmin.Phonenumber, &storedAdmin.Status, &storedAdmin.FailedAttempts, &storedAdmin.LockoutUntil,
+		)
+
 	if err != nil {
 		if err == sql.ErrNoRows {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid email"})
@@ -1167,15 +1321,62 @@ func AdminLogin(c *gin.Context) {
 		return
 	}
 
+	// Check if the admin is locked out
+	if storedAdmin.LockoutUntil != nil && storedAdmin.LockoutUntil.After(time.Now()) {
+		c.JSON(http.StatusForbidden, gin.H{"error": "Account is temporarily locked due to multiple failed login attempts. Please try again later."})
+		return
+	}
+
+	// Compare passwords
 	err = bcrypt.CompareHashAndPassword([]byte(storedAdmin.Password), []byte(reqAdmin.Password))
 	if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid password"})
+		// Password mismatch, increment failed_attempts
+		storedAdmin.FailedAttempts++
+		if storedAdmin.FailedAttempts >= 3 {
+			// Lock the account for 2 minutes (for testing purposes)
+			lockoutUntil := time.Now().Add(2 * time.Minute)
+			_, err := database.DB.Exec(
+				"UPDATE admin SET failed_attempts = $1, lockout_until = $2 WHERE email = $3",
+				storedAdmin.FailedAttempts, lockoutUntil, reqAdmin.Email,
+			)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+				return
+			}
+			// Send account locked email
+			if err := sendAccountLocked(reqAdmin.Email); err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to send account locked email"})
+				return
+			}
+			c.JSON(http.StatusForbidden, gin.H{"error": "Too many failed attempts. Account locked for 2 minutes."})
+		} else {
+			// Update the failed attempts count
+			_, err := database.DB.Exec(
+				"UPDATE admin SET failed_attempts = $1 WHERE email = $2",
+				storedAdmin.FailedAttempts, reqAdmin.Email,
+			)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+				return
+			}
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "Invalid password"})
+		}
+		return
+	}
+
+	// Successful login, reset failed attempts and lockout_until before sending the response
+	_, err = database.DB.Exec(
+		"UPDATE admin SET failed_attempts = 0, lockout_until = NULL WHERE email = $1",
+		reqAdmin.Email,
+	)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"message":     "Login successful",
-		"adminname":   storedAdmin.AdminName, // retrieve that from the front end
+		"adminname":   storedAdmin.AdminName,
 		"email":       storedAdmin.Email,
 		"phoneNumber": storedAdmin.Phonenumber,
 		"status":      storedAdmin.Status,
