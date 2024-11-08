@@ -1,9 +1,7 @@
 package database
 
 func GetTableQueries() []string {
-	return []string{
-		// make a full name for the employee
-		`CREATE TABLE IF NOT EXISTS employees (
+	return []string{`CREATE TABLE IF NOT EXISTS employees (
 			username           TEXT PRIMARY KEY, 
 			employeefullname   TEXT,
 			email              TEXT NOT NULL,

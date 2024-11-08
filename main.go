@@ -826,7 +826,6 @@ func updateEmployeeEmail(c *gin.Context) {
 }
 
 // from Maxence to generate token then send mail
-
 func getTokenJSON() {
 	ctx := context.Background()
 	b, err := os.ReadFile("credentials.json")
@@ -855,6 +854,7 @@ func getTokenJSON() {
 		fmt.Println("No labels found.")
 		return
 	}
+
 	fmt.Println("Labels:")
 	for _, l := range r.Labels {
 		fmt.Printf("- %s\n", l.Name)
@@ -874,13 +874,11 @@ func getClient(config *oauth2.Config) *http.Client {
 	}
 	return config.Client(context.Background(), tok)
 }
-
 // Request a token from the web, then returns the retrieved token.
 func getTokenFromWeb(config *oauth2.Config) *oauth2.Token {
 	authURL := config.AuthCodeURL("state-token", oauth2.AccessTypeOffline)
 	fmt.Printf("Go to the following link in your browser then type the "+
 		"authorization code: \n%v\n", authURL)
-
 	var authCode string
 	if _, err := fmt.Scan(&authCode); err != nil {
 		log.Fatalf("Unable to read authorization code: %v", err)
@@ -921,7 +919,6 @@ func sendResetEmail(userEmail string, code string) error {
 	if err != nil {
 		log.Fatalf("Unable to read client secret file: %v", err)
 	}
-
 	config, err := google.ConfigFromJSON(b, gmail.GmailSendScope)
 	if err != nil {
 		log.Fatalf("Unable to parse client secret file to config: %v", err)
@@ -959,7 +956,7 @@ func generateResetCode() (string, error) {
 	// Generate a random 6-digit code
 	code := fmt.Sprintf("%06d", rand.Intn(1000000))
 	return code, nil
-}
+} 
 
 // function for requesting the password reset code via email
 func RequestPasswordReset(ctx *gin.Context) {
@@ -1075,6 +1072,8 @@ func ResetPassword(ctx *gin.Context) {
 
 	ctx.JSON(http.StatusOK, gin.H{"message": "Password has been reset successfully"})
 }
+
+
 func ResetAdminPassword(ctx *gin.Context) {
 	var req struct {
 		Email    string `json:"email"`
